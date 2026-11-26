@@ -19,6 +19,7 @@ beforeEach(() => {
     ignoreTrimWhitespace: true,
     collapseUnchanged: true,
     markdownPreview: false,
+    showUntracked: true,
   });
 });
 
@@ -72,7 +73,16 @@ describe("useExplorerViewPrefs", () => {
       ignoreTrimWhitespace: true,
       collapseUnchanged: true,
       markdownPreview: false,
+      showUntracked: true,
     });
+  });
+
+  it("remembers the untracked-files switch", () => {
+    useExplorerViewPrefs.getState().toggleShowUntracked();
+    expect(useExplorerViewPrefs.getState().showUntracked).toBe(false);
+    // A stored `false` must survive; falling back to the default would silently
+    // put the untracked noise back into the change list.
+    expect(readViewPrefs().showUntracked).toBe(false);
   });
 
   it("remembers the markdown preview switch and ignores a non-boolean one", () => {

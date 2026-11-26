@@ -50,6 +50,12 @@ type Stored = {
    * deliberate act (`Ctrl+Shift+V`).
    */
   markdownPreview: boolean;
+  /**
+   * VS Code's `scm.showUntrackedFiles`, default on. Untracked files are the
+   * noisiest part of a fresh working tree (build output, scratch scripts), so
+   * hiding them is a common way to read a change set.
+   */
+  showUntracked: boolean;
 };
 
 const STORAGE_KEY = "multica_explorer_view_prefs";
@@ -62,6 +68,7 @@ const DEFAULTS: Stored = {
   ignoreTrimWhitespace: true,
   collapseUnchanged: true,
   markdownPreview: false,
+  showUntracked: true,
 };
 
 export function clampFontSize(value: number): number {
@@ -91,6 +98,8 @@ export function readViewPrefs(): Stored {
           : DEFAULTS.collapseUnchanged,
       markdownPreview:
         typeof parsed.markdownPreview === "boolean" ? parsed.markdownPreview : DEFAULTS.markdownPreview,
+      showUntracked:
+        typeof parsed.showUntracked === "boolean" ? parsed.showUntracked : DEFAULTS.showUntracked,
     };
   } catch {
     return { ...DEFAULTS };
@@ -121,6 +130,8 @@ type ExplorerViewPrefsState = Stored & {
   toggleCollapseUnchanged: () => void;
   setMarkdownPreview: (value: boolean) => void;
   toggleMarkdownPreview: () => void;
+  setShowUntracked: (value: boolean) => void;
+  toggleShowUntracked: () => void;
 };
 
 const initial = readViewPrefs();
@@ -170,6 +181,12 @@ export const useExplorerViewPrefs = create<ExplorerViewPrefsState>((set, get) =>
     writeViewPrefs({ ...get(), markdownPreview });
   },
   toggleMarkdownPreview: () => get().setMarkdownPreview(!get().markdownPreview),
+  setShowUntracked: (showUntracked) => {
+    if (showUntracked === get().showUntracked) return;
+    set({ showUntracked });
+    writeViewPrefs({ ...get(), showUntracked });
+  },
+  toggleShowUntracked: () => get().setShowUntracked(!get().showUntracked),
 }));
 
 /** Percentage shown in the toolbar; 12 px is the reference size. */

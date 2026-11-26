@@ -25,6 +25,7 @@ import {
 } from "@multica/ui/components/ui/context-menu";
 import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import type {
+  ExplorerCommit,
   ExplorerFileEntry,
   ExplorerFilePair,
   ExplorerRootInfo,
@@ -40,9 +41,12 @@ import {
   type ExplorerTab,
 } from "@/stores/explorer-tabs";
 import { ChangeList } from "./change-list";
+import { CommitGraph } from "./commit-graph";
 import { DiffView } from "./diff-view";
 import { FileTree } from "./file-tree";
 import { FileViewer } from "./file-viewer";
+import { FilterInput } from "./filter-input";
+import { RepoList } from "./repo-list";
 import { useExplorerStrings, type ExplorerStrings } from "./strings";
 import { IssueWindow } from "../issue-window";
 import { TRAFFIC_LIGHT_CLEARANCE } from "../window-toolbar";
@@ -217,6 +221,23 @@ function ExplorerBody({
     [openTab],
   );
 
+  /**
+   * A diff pinned to one commit. The tab id carries the revision so two
+   * revisions of the same file are two tabs, and its `path` reuses the `diff`
+   * kind's NUL convention for "path plus the thing to compare against".
+   */
+  const openCommitDiff = useCallback(
+    (rev: ExplorerCommit, path: string) => {
+      openTab({
+        id: explorerTabId("commit", `${path}\u0000${rev.hash}`),
+        kind: "commit",
+        title: `${baseName(path)} · ${rev.shortHash}`,
+        path: `${path}\u0000${rev.hash}`,
+      });
+    },
+    [openTab],
+  );
+
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? tabs[0];
   const activeIndex = Math.max(0, tabs.findIndex((tab) => tab.id === activeTab?.id));
 
@@ -255,12 +276,23 @@ function ExplorerBody({
               ) : panel === "files" ? (
                 <ExplorerFileList target={target} refreshToken={refreshToken} onOpen={openFile} strings={strings} />
               ) : (
-                <ChangeList
-                  target={target}
-                  refreshToken={refreshToken}
-                  onOpenDiff={openDiff}
-                  strings={strings}
-                />
+                <>
+                  {/* Same vertical order as VS Code's Source Control view:
+                      repositories, then the change set, then the graph. */}
+                  <RepoList target={target} refreshToken={refreshToken} strings={strings} />
+                  <ChangeList
+                    target={target}
+                    refreshToken={refreshToken}
+                    onOpenDiff={openDiff}
+                    strings={strings}
+                  />
+                  <CommitGraph
+                    target={target}
+                    refreshToken={refreshToken}
+                    onOpenCommitFile={openCommitDiff}
+                    strings={strings}
+                  />
+                </>
               )}
             </div>
           </aside>
@@ -274,6 +306,14 @@ function ExplorerBody({
               <TaskPane context={context} />
             ) : activeTab.kind === "file" ? (
               <FileViewer
+                target={target}
+                path={activeTab.path ?? ""}
+                refreshToken={refreshToken}
+                onOpenCommit={(rev) => openCommitDiff(rev, activeTab.path ?? "")}
+                strings={strings}
+              />
+            ) : activeTab.kind === "commit" ? (
+              <CommitDiffPane
                 target={target}
                 path={activeTab.path ?? ""}
                 refreshToken={refreshToken}
@@ -330,6 +370,7 @@ function ExplorerFileList({
   const [files, setFiles] = useState<string[] | null>(null);
   const [failed, setFailed] = useState(false);
   const [truncated, setTruncated] = useState(false);
+  const [filter, setFilter] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -354,7 +395,20 @@ function ExplorerFileList({
   // The IPC caps the listing; saying so beats a tree that silently stops.
   return (
     <>
-      <FileTree files={files} selectedPath={null} onOpen={onOpen} strings={strings} />
+      <FilterInput
+        value={filter}
+        onChange={setFilter}
+        label={strings.filterFiles}
+        placeholder={strings.filterFilesPlaceholder}
+        clearLabel={strings.clearFilter}
+      />
+      <FileTree
+        files={files}
+        selectedPath={null}
+        filter={filter}
+        onOpen={onOpen}
+        strings={strings}
+      />
       {truncated && (
         <p className="shrink-0 border-t border-border px-3 py-1.5 text-[11px] text-muted-foreground">
           {strings.truncated}
@@ -424,6 +478,71 @@ function DiffPane({
       strings={strings}
     />
   );
+}
+
+/**
+ * A file at one commit against its parent, opened from the timeline or the graph.
+ *
+ * Both sides come from git objects rather than the working tree, which is why it
+ * needs its own channel: `filePair` compares a commit to the disk, and a
+ * historical revision is not on disk at all.
+ */
+function CommitDiffPane({
+  target,
+  path,
+  refreshToken,
+  strings,
+}: {
+  target: ExplorerTarget;
+  path: string;
+  refreshToken: number;
+  strings: ExplorerStrings;
+}) {
+  const separator = path.indexOf("\u0000");
+  const filePath = separator >= 0 ? path.slice(0, separator) : path;
+  const rev = separator >= 0 ? path.slice(separator + 1) : "";
+
+  const [state, setState] = useState<
+    { status: "loading" } | { status: "ready"; pair: ExplorerFilePair } | { status: "error" }
+  >({ status: "loading" });
+
+  useEffect(() => {
+    if (!rev) {
+      setState({ status: "error" });
+      return;
+    }
+    let cancelled = false;
+    setState({ status: "loading" });
+    void window.desktopAPI.explorer.filePairAt(target, filePath, rev).then((result) => {
+      if (cancelled) return;
+      setState(result.ok ? { status: "ready", pair: result } : { status: "error" });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [target, filePath, rev, refreshToken]);
+
+  if (state.status === "loading") {
+    return (
+      <div className="flex h-full items-center justify-center text-body text-muted-foreground">
+        {strings.loading}
+      </div>
+    );
+  }
+  if (state.status === "error") {
+    return (
+      <div className="flex h-full items-center justify-center text-body text-muted-foreground">
+        {strings.loadFailed}
+      </div>
+    );
+  }
+  return <DiffView pair={state.pair} path={filePath} strings={strings} />;
+}
+
+/** Last path segment, for tab titles. */
+function baseName(path: string): string {
+  const index = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return index >= 0 ? path.slice(index + 1) : path;
 }
 
 /**

@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { ChevronDown, ChevronRight, Folder, List, ListTree } from "@multica/ui/icons";
+import { ChevronDown, ChevronRight, Eye, EyeOff, Folder, List, ListTree } from "@multica/ui/icons";
 import type {
   ExplorerChangeSet,
   ExplorerFileEntry,
   ExplorerTarget,
 } from "../../../../shared/explorer-api";
 import { useExplorerViewPrefs } from "@/stores/explorer-view-prefs";
+import { FilterInput } from "./filter-input";
 import type { ExplorerStrings } from "./strings";
 
 type ListState =
@@ -278,6 +279,9 @@ export function ChangeList({
   const [state, setState] = useState<ListState>({ status: "loading" });
   const view = useExplorerViewPrefs((pref) => pref.changesView);
   const setChangesView = useExplorerViewPrefs((pref) => pref.setChangesView);
+  const showUntracked = useExplorerViewPrefs((pref) => pref.showUntracked);
+  const toggleShowUntracked = useExplorerViewPrefs((pref) => pref.toggleShowUntracked);
+  const [filter, setFilter] = useState("");
   // Tree mode defaults to fully expanded; `collapsed` only tracks exceptions so
   // a refresh does not collapse what the user just opened.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
@@ -303,10 +307,30 @@ export function ChangeList({
     };
   }, [target, refreshToken, strings]);
 
-  const entries = useMemo(
+  const allEntries = useMemo(
     () => (state.status === "ready" ? state.changes.entries : []),
     [state],
   );
+
+  /**
+   * The tree, the counters and the footer all read this list, so the two
+   * filters have to be applied once, here — filtering in the row renderer
+   * instead would leave the "N files" total counting hidden rows.
+   */
+  const entries = useMemo(() => {
+    const terms = filter
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+    return allEntries.filter((entry) => {
+      if (!showUntracked && entry.untracked) return false;
+      if (terms.length === 0) return true;
+      const lower = entry.path.toLowerCase();
+      return terms.every((term) => lower.includes(term));
+    });
+  }, [allEntries, showUntracked, filter]);
+
   const tree = useMemo(() => buildChangeTree(entries), [entries]);
   const totals = useMemo(
     () =>
@@ -328,8 +352,24 @@ export function ChangeList({
     return <p className="px-3 py-4 text-body text-muted-foreground">{state.message}</p>;
   }
 
-  if (entries.length === 0) {
-    return <p className="px-3 py-4 text-body text-muted-foreground">{strings.noChanges}</p>;
+  // Two distinct empty states: nothing changed at all, versus everything being
+  // filtered out. Showing "no uncommitted changes" while a filter is active
+  // would read as if the working tree were clean.
+  if (allEntries.length === 0) {
+    return (
+      <>
+        <ChangeToolbar
+          count={0}
+          totals={{ additions: 0, deletions: 0 }}
+          strings={strings}
+          view={view}
+          onViewChange={setChangesView}
+          showUntracked={showUntracked}
+          onToggleUntracked={toggleShowUntracked}
+        />
+        <p className="px-3 py-4 text-body text-muted-foreground">{strings.noChanges}</p>
+      </>
+    );
   }
 
   const toggle = (path: string) => {
@@ -343,53 +383,123 @@ export function ChangeList({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 px-2 pb-1 text-[11px] text-muted-foreground">
-        <span className="tabular-nums">
-          {entries.length} {strings.filesChanged}
-        </span>
-        <DiffStat additions={totals.additions} deletions={totals.deletions} />
-        {/* VS Code exposes the same switch as "View as List / Tree" in the SCM
-            view's more-actions menu; here it is a one-click segmented control
-            because the list is the panel's primary surface. */}
-        <div className="ml-auto flex items-center rounded-md bg-muted/50 p-0.5">
+      <ChangeToolbar
+        count={entries.length}
+        totals={totals}
+        strings={strings}
+        view={view}
+        onViewChange={setChangesView}
+        showUntracked={showUntracked}
+        onToggleUntracked={toggleShowUntracked}
+      />
+      <FilterInput
+        value={filter}
+        onChange={setFilter}
+        label={strings.filterChanges}
+        placeholder={strings.filterChangesPlaceholder}
+        clearLabel={strings.clearFilter}
+      />
+      {entries.length === 0 ? (
+        <p className="px-3 py-4 text-body text-muted-foreground">{strings.filterNoMatch}</p>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-auto py-1">
+          {view === "list" ? (
+            entries.map((entry) => (
+              <FileRow
+                key={entry.path}
+                entry={entry}
+                depth={0}
+                showDirectory
+                strings={strings}
+                onOpen={() => onOpenDiff(entry, state.changes.base)}
+              />
+            ))
+          ) : (
+            <TreeRows
+              nodes={tree}
+              depth={0}
+              collapsed={collapsed}
+              onToggle={toggle}
+              onOpenDiff={(entry) => onOpenDiff(entry, state.changes.base)}
+              strings={strings}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The counters row above the change list: file count and diffstat on the left,
+ * the untracked toggle and the list/tree switch on the right.
+ *
+ * Kept as its own component because the empty state needs it too — a reader
+ * with untracked files hidden must still be able to find the switch that
+ * brought them there.
+ */
+function ChangeToolbar({
+  count,
+  totals,
+  strings,
+  view,
+  onViewChange,
+  showUntracked,
+  onToggleUntracked,
+}: {
+  count: number;
+  totals: { additions: number; deletions: number };
+  strings: ExplorerStrings;
+  view: "list" | "tree";
+  onViewChange: (view: "list" | "tree") => void;
+  showUntracked: boolean;
+  onToggleUntracked: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 px-2 pb-1 text-[11px] text-muted-foreground">
+      <span className="tabular-nums">
+        {count} {strings.filesChanged}
+      </span>
+      <DiffStat additions={totals.additions} deletions={totals.deletions} />
+      <div className="ml-auto flex items-center gap-0.5">
+        {/* VS Code hides this in the view's "…" menu; it is a first-class
+            control here because untracked build output is what makes a change
+            set unreadable. */}
+        <button
+          type="button"
+          onClick={onToggleUntracked}
+          aria-pressed={showUntracked}
+          aria-label={strings.showUntracked}
+          title={strings.showUntracked}
+          className={[
+            "rounded p-1 transition-colors",
+            showUntracked
+              ? "text-foreground"
+              : "text-muted-foreground hover:text-foreground",
+          ].join(" ")}
+        >
+          {showUntracked ? (
+            <Eye className="size-3" aria-hidden="true" />
+          ) : (
+            <EyeOff className="size-3" aria-hidden="true" />
+          )}
+        </button>
+        <div className="flex items-center rounded-md bg-muted/50 p-0.5">
           <ViewModeButton
             active={view === "list"}
             label={strings.viewAsList}
-            onClick={() => setChangesView("list")}
+            onClick={() => onViewChange("list")}
           >
             <List className="size-3" aria-hidden="true" />
           </ViewModeButton>
           <ViewModeButton
             active={view === "tree"}
             label={strings.viewAsTree}
-            onClick={() => setChangesView("tree")}
+            onClick={() => onViewChange("tree")}
           >
             <ListTree className="size-3" aria-hidden="true" />
           </ViewModeButton>
         </div>
-      </div>
-      <div className="min-h-0 flex-1 overflow-auto py-1">
-        {view === "list" ? (
-          entries.map((entry) => (
-            <FileRow
-              key={entry.path}
-              entry={entry}
-              depth={0}
-              showDirectory
-              strings={strings}
-              onOpen={() => onOpenDiff(entry, state.changes.base)}
-            />
-          ))
-        ) : (
-          <TreeRows
-            nodes={tree}
-            depth={0}
-            collapsed={collapsed}
-            onToggle={toggle}
-            onOpenDiff={(entry) => onOpenDiff(entry, state.changes.base)}
-            strings={strings}
-          />
-        )}
       </div>
     </div>
   );

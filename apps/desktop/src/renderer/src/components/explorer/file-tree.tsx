@@ -52,15 +52,19 @@ export function buildFileTree(files: readonly string[]): TreeNode[] {
 export function FileTree({
   files,
   selectedPath,
+  filter,
   onOpen,
   strings,
 }: {
   files: readonly string[];
   selectedPath: string | null;
+  /** Space-separated terms; every term must appear in the path. */
+  filter: string;
   onOpen: (path: string) => void;
   strings: ExplorerStrings;
 }) {
-  const tree = useMemo(() => buildFileTree(files), [files]);
+  const filtered = useMemo(() => filterFilePaths(files, filter), [files, filter]);
+  const tree = useMemo(() => buildFileTree(filtered), [filtered]);
   // Collapsed by default: a 5,000-entry repo would otherwise mount 5,000 rows.
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
@@ -75,7 +79,9 @@ export function FileTree({
 
   if (tree.length === 0) {
     return (
-      <p className="px-3 py-4 text-body text-muted-foreground">{strings.emptyTree}</p>
+      <p className="px-3 py-4 text-body text-muted-foreground">
+        {filter.trim() ? strings.filterNoMatch : strings.emptyTree}
+      </p>
     );
   }
 
@@ -85,6 +91,9 @@ export function FileTree({
         nodes={tree}
         depth={0}
         expanded={expanded}
+        // A filtered tree only contains matching branches, so leaving them
+        // collapsed would hide the very rows the reader asked for.
+        forceOpen={filter.trim().length > 0}
         selectedPath={selectedPath}
         onToggle={toggle}
         onOpen={onOpen}
@@ -93,10 +102,32 @@ export function FileTree({
   );
 }
 
+/**
+ * Paths matching a filter, as a browser-style "every word must appear"
+ * search rather than a glob: `src go` finds `apps/go/src/main.go`.
+ *
+ * Filtering the flat list (instead of pruning the built tree) keeps the tree
+ * builder untouched and means a match inside a directory brings its siblings'
+ * ancestors along for free, since the path is still whole.
+ */
+export function filterFilePaths(files: readonly string[], filter: string): readonly string[] {
+  const terms = filter
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (terms.length === 0) return files;
+  return files.filter((file) => {
+    const lower = file.toLowerCase();
+    return terms.every((term) => lower.includes(term));
+  });
+}
+
 function TreeRows({
   nodes,
   depth,
   expanded,
+  forceOpen,
   selectedPath,
   onToggle,
   onOpen,
@@ -104,6 +135,8 @@ function TreeRows({
   nodes: TreeNode[];
   depth: number;
   expanded: Set<string>;
+  /** Filtered trees are expanded wholesale — see the caller. */
+  forceOpen: boolean;
   selectedPath: string | null;
   onToggle: (path: string) => void;
   onOpen: (path: string) => void;
@@ -111,7 +144,7 @@ function TreeRows({
   return (
     <>
       {nodes.map((node) => {
-        const isOpen = expanded.has(node.path);
+        const isOpen = forceOpen || expanded.has(node.path);
         const isSelected = selectedPath === node.path;
         return (
           <Fragment key={node.path}>
@@ -148,6 +181,7 @@ function TreeRows({
                 nodes={node.children}
                 depth={depth + 1}
                 expanded={expanded}
+                forceOpen={forceOpen}
                 selectedPath={selectedPath}
                 onToggle={onToggle}
                 onOpen={onOpen}

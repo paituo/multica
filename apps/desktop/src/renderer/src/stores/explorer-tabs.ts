@@ -9,19 +9,28 @@ import { create } from "zustand";
  * an explorer window clobber the main window's tab list.
  */
 
-export type ExplorerTabKind = "task" | "file" | "diff";
+/**
+ * `commit` is a diff between a file at one commit and the same file at its
+ * parent — what the timeline opens when a revision is clicked. It is a separate
+ * kind because the two sides come from git objects, not from the working tree.
+ */
+export type ExplorerTabKind = "task" | "file" | "diff" | "commit";
 
 export type ExplorerTab = {
   id: string;
   kind: ExplorerTabKind;
   title: string;
-  /** Relative path inside the target root; absent for the task tab. */
+  /**
+   * Relative path inside the target root; absent for the task tab. A `commit`
+   * tab encodes `<path>\u0000<rev>`, the same NUL convention `diff` uses for its
+   * base commit.
+   */
   path?: string;
 };
 
 export const TASK_TAB_ID = "task";
 
-export function explorerTabId(kind: "file" | "diff", path: string): string {
+export function explorerTabId(kind: "file" | "diff" | "commit", path: string): string {
   return `${kind}:${path}`;
 }
 
@@ -101,7 +110,9 @@ function isTab(value: unknown): value is ExplorerTab {
   if (!value || typeof value !== "object") return false;
   const tab = value as Record<string, unknown>;
   if (typeof tab.id !== "string" || typeof tab.title !== "string") return false;
-  if (tab.kind !== "task" && tab.kind !== "file" && tab.kind !== "diff") return false;
+  if (tab.kind !== "task" && tab.kind !== "file" && tab.kind !== "diff" && tab.kind !== "commit") {
+    return false;
+  }
   if (tab.kind !== "task" && typeof tab.path !== "string") return false;
   return true;
 }

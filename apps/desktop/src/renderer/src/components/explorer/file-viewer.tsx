@@ -8,11 +8,15 @@ import {
   ContextMenuTrigger,
 } from "@multica/ui/components/ui/context-menu";
 import { Markdown } from "@multica/ui/markdown";
-import type { ExplorerTarget } from "../../../../shared/explorer-api";
+import type { ExplorerCommit, ExplorerTarget } from "../../../../shared/explorer-api";
 import { DEFAULT_CODE_FONT_SIZE, useExplorerViewPrefs } from "@/stores/explorer-view-prefs";
 import { CodeToolbar } from "./code-toolbar";
 import { BASE_EDITOR_OPTIONS, currentThemeName, languageFor, monaco } from "./monaco-setup";
+import { PreviewFindBar } from "./preview-find-bar";
+import { useHighlightMatches, usePreviewMatches } from "./preview-find";
+import "./preview-find.css";
 import type { ExplorerStrings } from "./strings";
+import { FileTimeline } from "./timeline";
 import { useCtrlWheelZoom } from "./use-ctrl-wheel-zoom";
 import { useMonacoTheme } from "./use-monaco-theme";
 
@@ -22,8 +26,17 @@ type ViewerState =
   | { status: "note"; message: string }
   | { status: "error"; message: string };
 
-/** Rendered measure of the preview column, before zoom. Same idea as the docs. */
-const PREVIEW_COLUMN_PX = 880;
+/**
+ * Visual gutter inside the preview, in unscaled pixels. Divided by the zoom
+ * ratio at render time so the margin looks the same at every font size.
+ */
+const PREVIEW_GUTTER_PX = 32;
+
+/**
+ * Documents above this size are not pre-rendered in the background: the idle
+ * pass would block the window for longer than the wait it saves.
+ */
+const PRERENDER_MAX_CHARS = 200_000;
 
 /**
  * Read-only text viewer, on Monaco.
@@ -43,11 +56,14 @@ export function FileViewer({
   target,
   path,
   refreshToken,
+  onOpenCommit,
   strings,
 }: {
   target: ExplorerTarget;
   path: string;
   refreshToken: number;
+  /** Opens a revision of this file in a diff tab; wired to the timeline rows. */
+  onOpenCommit: (rev: ExplorerCommit) => void;
   strings: ExplorerStrings;
 }) {
   const [state, setState] = useState<ViewerState>({ status: "loading" });
@@ -69,6 +85,56 @@ export function FileViewer({
   const hasText = text !== null;
   // A non-markdown file keeps the preference but never honours it.
   const previewing = isMarkdown && previewPref && hasText;
+  /** 1 at the reference font size; the preview scales its whole subtree by it. */
+  const previewRatio = fontSize / DEFAULT_CODE_FONT_SIZE;
+
+  // --- preview find -------------------------------------------------------
+
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findIndex, setFindIndex] = useState(0);
+  const matches = usePreviewMatches(previewRef, previewing && findOpen, findQuery);
+  const activeMatch = matches.length > 0 ? matches[Math.min(findIndex, matches.length - 1)] : undefined;
+  useHighlightMatches(matches, activeMatch);
+
+  // A new query restarts at the first hit rather than staying on a stale index.
+  useEffect(() => {
+    setFindIndex(0);
+  }, [findQuery]);
+
+  // Closing the preview must not leave the bar (or a registered highlight)
+  // pointing at a pane that is no longer displayed.
+  useEffect(() => {
+    if (!previewing) setFindOpen(false);
+  }, [previewing]);
+
+  // Bring the active hit into view. `scrollIntoView` walks up to the nearest
+  // scrollable ancestor, which is the preview pane, not the window.
+  useEffect(() => {
+    if (!activeMatch) return;
+    const element =
+      activeMatch.startContainer.parentElement ?? (activeMatch.startContainer as HTMLElement);
+    element?.scrollIntoView({ block: "center" });
+  }, [activeMatch]);
+
+  /**
+   * Pre-render the markdown while the reader is still looking at the source.
+   *
+   * Measured cause of the "opening the preview takes a moment" complaint: the
+   * first render walks react-markdown over the whole document and every
+   * `CodeBlock` inside it loads a Shiki grammar asynchronously, so the pane
+   * appears empty and then fills in. Rendering one idle frame ahead of the
+   * click makes the toggle a pure `display` change.
+   */
+  const [prerendered, setPrerendered] = useState(false);
+  useEffect(() => {
+    if (!isMarkdown || !hasText || previewing || prerendered) return;
+    if ((text?.length ?? 0) > PRERENDER_MAX_CHARS) return;
+    const idle = window.requestIdleCallback(() => setPrerendered(true), { timeout: 1_200 });
+    return () => window.cancelIdleCallback(idle);
+  }, [isMarkdown, hasText, previewing, prerendered, text]);
+
+  const previewMounted = previewing || prerendered;
 
   useEffect(() => {
     let cancelled = false;
@@ -179,6 +245,29 @@ export function FileViewer({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isMarkdown, setPreview]);
 
+  /**
+   * `Ctrl+F` over the preview.
+   *
+   * Only intercepted while the preview is the visible surface — in the source
+   * view the key still belongs to Monaco's own find widget.
+   */
+  useEffect(() => {
+    if (!previewing) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        setFindOpen(true);
+        return;
+      }
+      if (event.key === "Escape" && findOpen) {
+        event.preventDefault();
+        setFindOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [previewing, findOpen]);
+
   const copyPath = useCallback(() => {
     void navigator.clipboard.writeText(path);
   }, [path]);
@@ -210,10 +299,13 @@ export function FileViewer({
             className={previewing ? "hidden" : "h-full w-full"}
             data-file-host="monaco"
           />
-          {previewing && (
+          {previewMounted && (
             <div
               ref={previewRef}
-              className="h-full overflow-auto [scrollbar-gutter:stable]"
+              // Pre-rendered but not selected: mounted, not displayed, so the
+              // toggle is instant. `hidden` still lets React and Shiki finish
+              // their work, and costs no layout.
+              className={previewing ? "h-full overflow-auto [scrollbar-gutter:stable]" : "hidden"}
               data-file-host="markdown"
             >
               {/*
@@ -224,20 +316,54 @@ export function FileViewer({
                * descendant changes nothing inside it. A font-size on this
                * wrapper is no better — it would scale only the elements that
                * inherit it, leaving every heading, table and code block fixed.
-               * `zoom` scales the whole subtree; the column width is divided by
-               * it so the rendered measure stays 880 px and the preview
-               * reflows instead of scrolling sideways.
+               *
+               * Two consequences of `zoom` that the sizing has to absorb:
+               *
+               * - It scales the element's box too, so `width: 100%` at 125%
+               *   renders 125% of the pane and forces a horizontal scrollbar.
+               *   Dividing the width by the ratio keeps the *rendered* width
+               *   equal to the pane's — the preview reflows instead of
+               *   scrolling sideways, and the text still gets bigger.
+               * - Padding is scaled as well, so it is divided by the same ratio
+               *   to keep the visual gutter constant.
+               *
+               * There is deliberately no max-width: a fixed measure left large
+               * empty bands on both sides in a wide window (measured 880 px of
+               * content inside a ~1 100 px pane at 125%). VS Code's preview
+               * fills the pane, and so does this one.
                */}
               <article
-                className="mx-auto w-full px-10 py-8"
+                className="mx-auto w-full"
                 style={{
-                  zoom: fontSize / DEFAULT_CODE_FONT_SIZE,
-                  maxWidth: `${PREVIEW_COLUMN_PX / (fontSize / DEFAULT_CODE_FONT_SIZE)}px`,
+                  zoom: previewRatio,
+                  width: `calc(100% / ${previewRatio})`,
+                  paddingLeft: PREVIEW_GUTTER_PX / previewRatio,
+                  paddingRight: PREVIEW_GUTTER_PX / previewRatio,
+                  paddingTop: PREVIEW_GUTTER_PX / previewRatio,
+                  paddingBottom: PREVIEW_GUTTER_PX / previewRatio,
                 }}
               >
                 <Markdown mode="full">{state.text}</Markdown>
               </article>
             </div>
+          )}
+          {previewing && findOpen && (
+            <PreviewFindBar
+              strings={strings}
+              query={findQuery}
+              onChange={setFindQuery}
+              total={matches.length}
+              index={Math.min(findIndex, Math.max(0, matches.length - 1))}
+              onPrev={() =>
+                setFindIndex((current) =>
+                  matches.length === 0 ? 0 : (current - 1 + matches.length) % matches.length,
+                )
+              }
+              onNext={() =>
+                setFindIndex((current) => (matches.length === 0 ? 0 : (current + 1) % matches.length))
+              }
+              onClose={() => setFindOpen(false)}
+            />
           )}
         </ContextMenuTrigger>
 
@@ -257,6 +383,20 @@ export function FileViewer({
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
+
+      {/*
+       * VS Code's Timeline, docked under the editor rather than in a sidebar.
+       * Only rendered once the file has loaded — a timeline of a path that
+       * failed to read would be a list of commits for something the reader
+       * cannot see.
+       */}
+      <FileTimeline
+        target={target}
+        path={path}
+        refreshToken={refreshToken}
+        onOpenCommit={onOpenCommit}
+        strings={strings}
+      />
     </div>
   );
 }

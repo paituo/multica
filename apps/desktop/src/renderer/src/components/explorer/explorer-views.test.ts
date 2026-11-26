@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { ExplorerFileEntry } from "../../../../shared/explorer-api";
 import { buildChangeTree } from "./change-list";
-import { buildFileTree } from "./file-tree";
+import { buildFileTree, filterFilePaths } from "./file-tree";
+import { relativeTime } from "./relative-time";
 
 describe("buildFileTree", () => {
   it("nests by directory and puts directories first", () => {
@@ -60,5 +61,47 @@ describe("buildChangeTree", () => {
   it("treats missing line counts as zero", () => {
     const [node] = buildChangeTree([{ path: "x.ts", additions: null, deletions: null, status: "??" }]);
     expect(node).toMatchObject({ additions: 0, deletions: 0, files: 1 });
+  });
+});
+
+describe("filterFilePaths", () => {
+  const files = ["src/app.ts", "src/app.test.ts", "docs/guide.md", "README.md"];
+
+  it("returns the list untouched for a blank filter", () => {
+    expect(filterFilePaths(files, "   ")).toEqual(files);
+  });
+
+  it("matches a substring, case-insensitively", () => {
+    // "app.ts" is not a substring of "app.test.ts" — the dot is not a wildcard.
+    expect(filterFilePaths(files, "APP.TS")).toEqual(["src/app.ts"]);
+    expect(filterFilePaths(files, "TEST")).toEqual(["src/app.test.ts"]);
+  });
+
+  it("requires every whitespace-separated term", () => {
+    // VS Code's file filter is an AND over the words, not a single substring.
+    expect(filterFilePaths(files, "src test")).toEqual(["src/app.test.ts"]);
+    expect(filterFilePaths(files, "docs test")).toEqual([]);
+  });
+
+  it("ignores entries that do not match", () => {
+    expect(filterFilePaths(files, "nothing-here")).toEqual([]);
+  });
+});
+
+describe("relativeTime", () => {
+  const now = Date.parse("2026-11-26T11:00:00Z");
+
+  it("formats in the app locale, not the OS one", () => {
+    expect(relativeTime("2026-11-26T09:00:00Z", "en", now)).toBe("2 hours ago");
+    expect(relativeTime("2026-11-26T09:00:00Z", "zh", now)).toBe("2小时前");
+  });
+
+  it("uses the largest unit that fits", () => {
+    // 1 day 2 hours reads as "yesterday", not "26 hours ago".
+    expect(relativeTime("2026-11-25T09:00:00Z", "en", now)).toBe("yesterday");
+  });
+
+  it("returns an empty string for an unparseable date", () => {
+    expect(relativeTime("not a date", "en", now)).toBe("");
   });
 });
