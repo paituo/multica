@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ExplorerFileEntry } from "../../../../shared/explorer-api";
-import { buildChangeTree } from "./change-list";
-import { buildFileTree, filterFilePaths } from "./file-tree";
+import { buildChangeTree, shortenDirectory, splitChangeGroups } from "./change-list";
+import { buildFileTree, filterFilePaths, parentDirectories } from "./file-tree";
 import { relativeTime } from "./relative-time";
+import { statusBadgeClass, statusLetter } from "./status-badge";
 
 describe("buildFileTree", () => {
   it("nests by directory and puts directories first", () => {
@@ -85,6 +86,117 @@ describe("filterFilePaths", () => {
 
   it("ignores entries that do not match", () => {
     expect(filterFilePaths(files, "nothing-here")).toEqual([]);
+  });
+});
+
+describe("splitChangeGroups", () => {
+  /** One porcelain record: `x` is index-vs-HEAD, `y` worktree-vs-index. */
+  const porcelain = (path: string, x: string, y: string): ExplorerFileEntry => ({
+    path,
+    additions: null,
+    deletions: null,
+    status: x.trim() || y.trim() || null,
+    indexStatus: x,
+    worktreeStatus: y,
+  });
+
+  it("separates staged work from worktree edits", () => {
+    const groups = splitChangeGroups([
+      porcelain("staged.ts", "M", " "),
+      porcelain("worktree.ts", " ", "M"),
+    ]);
+
+    expect(groups.map((group) => group.id)).toEqual(["staged", "unstaged"]);
+    expect(groups[0].entries.map((entry) => entry.path)).toEqual(["staged.ts"]);
+    expect(groups[1].entries.map((entry) => entry.path)).toEqual(["worktree.ts"]);
+  });
+
+  it("keeps a file edited on both sides in both groups", () => {
+    // `MM` is what VS Code shows under Staged Changes *and* Changes; dropping
+    // one of the two would hide half of the user's work.
+    const groups = splitChangeGroups([porcelain("both.ts", "M", "M")]);
+    expect(groups.map((group) => group.entries.map((entry) => entry.path))).toEqual([
+      ["both.ts"],
+      ["both.ts"],
+    ]);
+  });
+
+  it("puts untracked files in Changes only", () => {
+    const groups = splitChangeGroups([porcelain("new.ts", "?", "?")]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].id).toBe("unstaged");
+  });
+
+  it("treats entries without porcelain columns as plain changes", () => {
+    // A branch diff has no index to be staged into.
+    const groups = splitChangeGroups([{ path: "a.ts", additions: 1, deletions: 0, status: "M" }]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].id).toBe("unstaged");
+  });
+
+  it("omits an empty group instead of rendering a bare header", () => {
+    expect(splitChangeGroups([porcelain("a.ts", "A", " ")]).map((group) => group.id)).toEqual([
+      "staged",
+    ]);
+    expect(splitChangeGroups([])).toEqual([]);
+  });
+});
+
+describe("shortenDirectory", () => {
+  it("keeps the tail, because the head is what every row shares", () => {
+    // Measured in the harness: twelve rows of `apps/desktop/src/...` were
+    // indistinguishable once the browser truncated the right end.
+    expect(shortenDirectory("apps/desktop/src/components/explorer/")).toBe("…/explorer/");
+  });
+
+  it("keeps as many trailing segments as fit the budget", () => {
+    // Two segments fit, three do not: the description stays inside the 320 px
+    // sidebar instead of being clipped a second time.
+    expect(shortenDirectory("apps/desktop/src/main/")).toBe("…/src/main/");
+    expect(shortenDirectory("very/long/directory/name/")).toBe("…/directory/name/");
+  });
+
+  it("leaves a short path alone", () => {
+    expect(shortenDirectory("src/")).toBe("src/");
+    expect(shortenDirectory("src/components/")).toBe("src/components/");
+    expect(shortenDirectory("docs/")).toBe("docs/");
+    expect(shortenDirectory("")).toBe("");
+  });
+
+  it("keeps the trailing slash so a directory never reads like a file", () => {
+    expect(shortenDirectory("a/b/c/d/e/f/")).toMatch(/\/$/);
+    expect(shortenDirectory("a/b/c/d/e/f")).not.toMatch(/\/$/);
+  });
+});
+
+describe("status letters", () => {
+  it("abbreviates untracked files to U, as VS Code does", () => {
+    expect(statusLetter("??", true)).toBe("U");
+    expect(statusLetter("??", false)).toBe("?");
+  });
+
+  it("takes the first letter of a porcelain status", () => {
+    expect(statusLetter("MM")).toBe("M");
+    expect(statusLetter("m")).toBe("M");
+    expect(statusLetter(null)).toBeNull();
+    expect(statusLetter(" ")).toBeNull();
+  });
+
+  it("gives both new-file shapes the same colour", () => {
+    expect(statusBadgeClass("A")).toBe(statusBadgeClass("??", true));
+  });
+});
+
+describe("parentDirectories", () => {
+  it("lists every ancestor of every path", () => {
+    expect([...parentDirectories(["src/a/b.ts", "src/c.ts", "README.md"])].sort()).toEqual([
+      "src",
+      "src/a",
+    ]);
+  });
+
+  it("stops at the last segment", () => {
+    expect(parentDirectories(["top.md"]).size).toBe(0);
   });
 });
 

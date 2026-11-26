@@ -10,6 +10,8 @@ import {
 import {
   FileText,
   GitBranch,
+  ListChevronsDownUp,
+  ListChevronsUpDown,
   ListEnd,
   ListX,
   RefreshCw,
@@ -43,10 +45,11 @@ import {
 import { ChangeList } from "./change-list";
 import { CommitGraph } from "./commit-graph";
 import { DiffView } from "./diff-view";
-import { FileTree } from "./file-tree";
+import { FileTree, parentDirectories } from "./file-tree";
 import { FileViewer } from "./file-viewer";
 import { FilterInput } from "./filter-input";
 import { RepoList } from "./repo-list";
+import type { FileStatusDecoration } from "./status-badge";
 import { useExplorerStrings, type ExplorerStrings } from "./strings";
 import { IssueWindow } from "../issue-window";
 import { TRAFFIC_LIGHT_CLEARANCE } from "../window-toolbar";
@@ -183,6 +186,27 @@ function ExplorerBody({
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
+  /**
+   * VS Code's view shortcuts: `Ctrl+Shift+E` for the explorer, `Ctrl+Shift+G`
+   * for source control. Small thing, but this window *is* the editor's
+   * replacement for a task, and hands reach for them.
+   */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || !event.shiftKey || event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (key === "e") {
+        event.preventDefault();
+        setPanel("files");
+      } else if (key === "g") {
+        event.preventDefault();
+        setPanel("changes");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     void window.desktopAPI.explorer.rootInfo().then((result) => {
@@ -241,6 +265,18 @@ function ExplorerBody({
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? tabs[0];
   const activeIndex = Math.max(0, tabs.findIndex((tab) => tab.id === activeTab?.id));
 
+  /**
+   * The change-list row that the visible tab belongs to.
+   *
+   * Both diff tab kinds pack extra state after a NUL (`path\0base`,
+   * `path\0rev`), so the path has to be split back off before it can be
+   * compared with a `ExplorerFileEntry.path`.
+   */
+  const activeChangePath =
+    activeTab && (activeTab.kind === "diff" || activeTab.kind === "commit")
+      ? (activeTab.path ?? "").split("\u0000")[0]
+      : null;
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <ExplorerTabBar
@@ -274,7 +310,13 @@ function ExplorerBody({
               {rootError ? (
                 <p className="px-3 py-4 text-body text-muted-foreground">{rootError}</p>
               ) : panel === "files" ? (
-                <ExplorerFileList target={target} refreshToken={refreshToken} onOpen={openFile} strings={strings} />
+                <ExplorerFileList
+                  target={target}
+                  refreshToken={refreshToken}
+                  selectedPath={activeTab?.kind === "file" ? (activeTab.path ?? null) : null}
+                  onOpen={openFile}
+                  strings={strings}
+                />
               ) : (
                 <>
                   {/* Same vertical order as VS Code's Source Control view:
@@ -283,6 +325,7 @@ function ExplorerBody({
                   <ChangeList
                     target={target}
                     refreshToken={refreshToken}
+                    selectedPath={activeChangePath}
                     onOpenDiff={openDiff}
                     strings={strings}
                   />
@@ -356,26 +399,44 @@ function TaskPane({ context }: { context: ExplorerWindowContext }) {
   );
 }
 
-function ExplorerFileList({
+/**
+ * The file panel: filter, collapse-all, the tree, and the truncation notice.
+ *
+ * Exported so the pane can be mounted on its own (component tests and the
+ * visual harness), which is otherwise awkward: everything around it wants an
+ * authenticated window and a live worktree.
+ */
+export function ExplorerFileList({
   target,
   refreshToken,
+  selectedPath,
   onOpen,
   strings,
 }: {
   target: ExplorerTarget;
   refreshToken: number;
+  /** Path of the file in the active tab, highlighted in the tree. */
+  selectedPath: string | null;
   onOpen: (path: string) => void;
   strings: ExplorerStrings;
 }) {
   const [files, setFiles] = useState<string[] | null>(null);
+  const [decorations, setDecorations] = useState<ReadonlyMap<string, FileStatusDecoration>>(new Map());
   const [failed, setFailed] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const [filter, setFilter] = useState("");
+  // Collapsed by default: a 5,000-entry repo would otherwise mount 5,000 rows.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     let cancelled = false;
     setFailed(false);
-    void window.desktopAPI.explorer.listFiles(target).then((result) => {
+    // Status is a second, independent request: a directory git cannot read
+    // (no repository, no binary) still has files worth listing.
+    void Promise.all([
+      window.desktopAPI.explorer.listFiles(target),
+      window.desktopAPI.explorer.gitStatus(target),
+    ]).then(([result, status]) => {
       if (cancelled) return;
       if (!result.ok) {
         setFailed(true);
@@ -384,28 +445,62 @@ function ExplorerFileList({
       }
       setFiles(result.files);
       setTruncated(result.truncated);
+
+      const next = new Map<string, FileStatusDecoration>();
+      if (status.ok) {
+        for (const entry of status.entries) {
+          next.set(entry.path, { status: entry.status, untracked: Boolean(entry.untracked) });
+        }
+      }
+      setDecorations(next);
     });
     return () => {
       cancelled = true;
     };
   }, [target, refreshToken]);
 
+  const toggle = (path: string) => {
+    setExpanded((previous) => {
+      const next = new Set(previous);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
   if (failed) return <p className="px-3 py-4 text-body text-muted-foreground">{strings.loadFailed}</p>;
   if (files === null) return <p className="px-3 py-4 text-body text-muted-foreground">{strings.loading}</p>;
   // The IPC caps the listing; saying so beats a tree that silently stops.
   return (
     <>
-      <FilterInput
-        value={filter}
-        onChange={setFilter}
-        label={strings.filterFiles}
-        placeholder={strings.filterFilesPlaceholder}
-        clearLabel={strings.clearFilter}
-      />
+      <div className="flex items-center gap-0.5 pr-2">
+        <div className="min-w-0 flex-1">
+          <FilterInput
+            value={filter}
+            onChange={setFilter}
+            label={strings.filterFiles}
+            placeholder={strings.filterFilesPlaceholder}
+            clearLabel={strings.clearFilter}
+          />
+        </div>
+        {/* VS Code's explorer title bar has these two next to the filter. */}
+        <TreeActionButton
+          label={strings.expandAll}
+          onClick={() => setExpanded(parentDirectories(files))}
+        >
+          <ListChevronsUpDown className="size-3" aria-hidden="true" />
+        </TreeActionButton>
+        <TreeActionButton label={strings.collapseAll} onClick={() => setExpanded(new Set())}>
+          <ListChevronsDownUp className="size-3" aria-hidden="true" />
+        </TreeActionButton>
+      </div>
       <FileTree
         files={files}
-        selectedPath={null}
+        selectedPath={selectedPath}
         filter={filter}
+        expanded={expanded}
+        onToggle={toggle}
+        decorations={decorations}
         onOpen={onOpen}
         strings={strings}
       />
@@ -415,6 +510,28 @@ function ExplorerFileList({
         </p>
       )}
     </>
+  );
+}
+
+function TreeActionButton({
+  label,
+  onClick,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className="shrink-0 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+    >
+      {children}
+    </button>
   );
 }
 

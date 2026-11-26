@@ -7,6 +7,7 @@ import type {
 } from "../../../../shared/explorer-api";
 import { useExplorerViewPrefs } from "@/stores/explorer-view-prefs";
 import { FilterInput } from "./filter-input";
+import { statusBadgeClass, statusLetter } from "./status-badge";
 import type { ExplorerStrings } from "./strings";
 
 type ListState =
@@ -15,29 +16,6 @@ type ListState =
   | { status: "error"; message: string };
 
 const INDENT_PX = 12;
-
-function statusBadgeClass(status: string | null): string {
-  if (!status) return "text-muted-foreground";
-  const first = status.slice(0, 1).toUpperCase();
-  switch (first) {
-    case "A":
-      return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300";
-    case "D":
-      return "bg-red-500/15 text-red-700 dark:text-red-300";
-    case "M":
-      return "bg-amber-500/15 text-amber-700 dark:text-amber-300";
-    case "R":
-    case "C":
-      return "bg-blue-500/15 text-blue-700 dark:text-blue-300";
-    default:
-      return "bg-muted text-muted-foreground";
-  }
-}
-
-function statusLabel(entry: ExplorerFileEntry, strings: ExplorerStrings): string {
-  if (entry.untracked) return strings.untracked;
-  return entry.status ?? "?";
-}
 
 // --- tree model -----------------------------------------------------------
 
@@ -128,7 +106,82 @@ export function buildChangeTree(entries: readonly ExplorerFileEntry[]): ChangeTr
   return roots;
 }
 
+// --- staged / unstaged split ----------------------------------------------
+
+export type ChangeGroupId = "staged" | "unstaged";
+
+export type ChangeGroup = { id: ChangeGroupId; entries: ExplorerFileEntry[] };
+
+/** X column: something is staged (as opposed to blank, or `?` for untracked). */
+function inIndex(column: string | null | undefined): boolean {
+  return column != null && column !== "" && column !== " " && column !== "?";
+}
+
+/** Y column: something changed in the worktree (`?` is an untracked file). */
+function inWorktree(column: string | null | undefined): boolean {
+  return column == null || (column !== "" && column !== " ");
+}
+
+/**
+ * Splits the change set into VS Code's two groups.
+ *
+ * A file edited on both sides of the index (`MM`) deliberately lands in both:
+ * that is exactly what the reader sees in VS Code, and collapsing it into one
+ * group would hide either the staged or the unstaged half of the work.
+ *
+ * Entries without porcelain columns (a branch diff, a commit's file list) have
+ * no index to be staged in, so they all fall into the single "Changes" group.
+ */
+export function splitChangeGroups(entries: readonly ExplorerFileEntry[]): ChangeGroup[] {
+  const staged: ExplorerFileEntry[] = [];
+  const unstaged: ExplorerFileEntry[] = [];
+  for (const entry of entries) {
+    if (inIndex(entry.indexStatus)) staged.push(entry);
+    if (inWorktree(entry.worktreeStatus)) unstaged.push(entry);
+  }
+  const groups: ChangeGroup[] = [];
+  if (staged.length > 0) groups.push({ id: "staged", entries: staged });
+  if (unstaged.length > 0) groups.push({ id: "unstaged", entries: unstaged });
+  return groups;
+}
+
 // --- rows -----------------------------------------------------------------
+
+/**
+ * Keeps the *end* of a directory path and elides the beginning.
+ *
+ * The row layout puts the file name first and the directory after it, because
+ * the name is what the reader is looking for. `truncate` on the directory then
+ * cuts from the right — the end that distinguishes one row from the next — so
+ * every row in `apps/desktop/src/...` read identically: measured in the
+ * harness, twelve rows all showed `apps/desktop/src/...` with nothing to tell
+ * them apart.
+ *
+ * VS Code's description field elides the same way (from the left). Segments are
+ * dropped from the front until the remainder fits `maxLength`, because a fixed
+ * segment count still overflowed the 320 px sidebar and got truncated a second
+ * time (`…/components/expl…`), which loses the tail this function exists to
+ * keep. The budget is 14 characters of path — `…/src/main/` and
+ * `…/explorer/` both fit the measurement above, `desktop/src/main` does not.
+ */
+export function shortenDirectory(directory: string, maxLength = 14): string {
+  if (!directory) return "";
+  const trailingSlash = directory.endsWith("/");
+  const parts = directory.split("/").filter(Boolean);
+  if (parts.length === 0) return directory;
+  if (parts.join("/").length <= maxLength) return directory;
+
+  const kept: string[] = [];
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index];
+    if (part === undefined) continue;
+    // Always keep at least one segment, even if that one alone is too long —
+    // an empty description would be worse than a clipped one.
+    if (kept.length > 0 && [part, ...kept].join("/").length > maxLength) break;
+    kept.unshift(part);
+  }
+  return `…/${kept.join("/")}${trailingSlash ? "/" : ""}`;
+}
 
 function DiffStat({ additions, deletions }: { additions: number; deletions: number }) {
   if (additions <= 0 && deletions <= 0) return null;
@@ -145,35 +198,56 @@ function FileRow({
   entry,
   depth,
   showDirectory,
+  selected,
   onOpen,
   strings,
 }: {
   entry: ExplorerFileEntry;
   depth: number;
   showDirectory: boolean;
+  /** True when this file's diff is the tab on screen. */
+  selected: boolean;
   onOpen: () => void;
   strings: ExplorerStrings;
 }) {
   const slash = entry.path.lastIndexOf("/");
-  const directory = showDirectory && slash >= 0 ? entry.path.slice(0, slash + 1) : "";
+  const directory = showDirectory && slash >= 0 ? shortenDirectory(entry.path.slice(0, slash + 1)) : "";
   const name = slash >= 0 ? entry.path.slice(slash + 1) : entry.path;
+  // `U` for untracked, as in VS Code; the word lives in the accessible name so
+  // a 10 px badge never has to fit three Chinese characters.
+  const letter = statusLetter(entry.status, entry.untracked) ?? "?";
 
   return (
     <button
       type="button"
       onClick={onOpen}
-      className="flex w-full items-center gap-2 rounded-sm py-[3px] pr-2 text-left text-[12px] leading-5 hover:bg-accent/60"
+      aria-current={selected ? "true" : undefined}
+      className={[
+        "flex w-full items-center gap-2 rounded-sm py-[3px] pr-2 text-left text-[12px] leading-5",
+        // VS Code keeps the open file's row highlighted in the change list, so
+        // the reader can see which row the diff on the right belongs to.
+        selected ? "bg-accent text-accent-foreground" : "hover:bg-accent/60",
+      ].join(" ")}
       style={{ paddingLeft: depth * INDENT_PX + 8 }}
-      title={entry.path}
+      // The tooltip carries the word the badge abbreviates to one letter.
+      title={entry.untracked ? `${entry.path} · ${strings.untracked}` : entry.path}
     >
       <span
-        className={`shrink-0 rounded-sm px-1 text-[10px] font-medium uppercase tabular-nums ${statusBadgeClass(entry.status)}`}
+        className={`shrink-0 rounded-sm px-1 text-[10px] font-medium uppercase tabular-nums ${statusBadgeClass(entry.status, entry.untracked)}`}
       >
-        {statusLabel(entry, strings)}
+        {letter}
       </span>
-      <span className="min-w-0 flex-1 truncate">
-        <span className="text-muted-foreground">{directory}</span>
-        <span className="text-foreground/90">{name}</span>
+      {/*
+       * Name first, directory second. The old order put the directory in front,
+       * so truncation cut the file name — the one part of the row worth reading.
+       */}
+      <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
+        <span className="min-w-0 flex-1 truncate text-foreground/90">{name}</span>
+        {directory && (
+          <span className="max-w-[60%] shrink-0 truncate text-[11px] text-muted-foreground" aria-hidden="true">
+            {directory}
+          </span>
+        )}
       </span>
       <DiffStat additions={entry.additions ?? 0} deletions={entry.deletions ?? 0} />
     </button>
@@ -216,6 +290,7 @@ function TreeRows({
   nodes,
   depth,
   collapsed,
+  selectedPath,
   onToggle,
   onOpenDiff,
   strings,
@@ -223,6 +298,7 @@ function TreeRows({
   nodes: ChangeTreeNode[];
   depth: number;
   collapsed: Set<string>;
+  selectedPath: string | null;
   onToggle: (path: string) => void;
   onOpenDiff: (entry: ExplorerFileEntry) => void;
   strings: ExplorerStrings;
@@ -237,6 +313,7 @@ function TreeRows({
               entry={node.entry}
               depth={depth}
               showDirectory={false}
+              selected={selectedPath === node.path}
               strings={strings}
               onOpen={() => node.entry && onOpenDiff(node.entry)}
             />
@@ -251,6 +328,7 @@ function TreeRows({
                 nodes={node.children}
                 depth={depth + 1}
                 collapsed={collapsed}
+                selectedPath={selectedPath}
                 onToggle={onToggle}
                 onOpenDiff={onOpenDiff}
                 strings={strings}
@@ -268,11 +346,14 @@ function TreeRows({
 export function ChangeList({
   target,
   refreshToken,
+  selectedPath = null,
   onOpenDiff,
   strings,
 }: {
   target: ExplorerTarget;
   refreshToken: number;
+  /** Path whose diff is the active tab; that row stays highlighted. */
+  selectedPath?: string | null;
   onOpenDiff: (entry: ExplorerFileEntry, base: string | null) => void;
   strings: ExplorerStrings;
 }) {
@@ -282,9 +363,6 @@ export function ChangeList({
   const showUntracked = useExplorerViewPrefs((pref) => pref.showUntracked);
   const toggleShowUntracked = useExplorerViewPrefs((pref) => pref.toggleShowUntracked);
   const [filter, setFilter] = useState("");
-  // Tree mode defaults to fully expanded; `collapsed` only tracks exceptions so
-  // a refresh does not collapse what the user just opened.
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -331,7 +409,7 @@ export function ChangeList({
     });
   }, [allEntries, showUntracked, filter]);
 
-  const tree = useMemo(() => buildChangeTree(entries), [entries]);
+  const groups = useMemo(() => splitChangeGroups(entries), [entries]);
   const totals = useMemo(
     () =>
       entries.reduce(
@@ -372,15 +450,6 @@ export function ChangeList({
     );
   }
 
-  const toggle = (path: string) => {
-    setCollapsed((previous) => {
-      const next = new Set(previous);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
-  };
-
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <ChangeToolbar
@@ -403,30 +472,106 @@ export function ChangeList({
         <p className="px-3 py-4 text-body text-muted-foreground">{strings.filterNoMatch}</p>
       ) : (
         <div className="min-h-0 flex-1 overflow-auto py-1">
-          {view === "list" ? (
-            entries.map((entry) => (
-              <FileRow
-                key={entry.path}
-                entry={entry}
-                depth={0}
-                showDirectory
-                strings={strings}
-                onOpen={() => onOpenDiff(entry, state.changes.base)}
-              />
-            ))
-          ) : (
-            <TreeRows
-              nodes={tree}
-              depth={0}
-              collapsed={collapsed}
-              onToggle={toggle}
-              onOpenDiff={(entry) => onOpenDiff(entry, state.changes.base)}
+          {groups.map((group) => (
+            <ChangeGroupSection
+              key={group.id}
+              group={group}
+              view={view}
+              base={state.changes.base}
+              selectedPath={selectedPath}
+              onOpenDiff={onOpenDiff}
               strings={strings}
             />
-          )}
+          ))}
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * One collapsible group of the change list — VS Code's "Staged Changes" and
+ * "Changes".
+ *
+ * Collapse state is per group rather than shared, because the same path can
+ * appear in both (a file staged and then edited again) and collapsing one
+ * folder must not collapse the other's.
+ */
+function ChangeGroupSection({
+  group,
+  view,
+  base,
+  selectedPath,
+  onOpenDiff,
+  strings,
+}: {
+  group: ChangeGroup;
+  view: "list" | "tree";
+  base: string | null;
+  selectedPath: string | null;
+  onOpenDiff: (entry: ExplorerFileEntry, base: string | null) => void;
+  strings: ExplorerStrings;
+}) {
+  const [open, setOpen] = useState(true);
+  // Tree mode defaults to fully expanded; `collapsed` only tracks exceptions so
+  // a refresh does not collapse what the user just opened.
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const tree = useMemo(() => buildChangeTree(group.entries), [group.entries]);
+
+  const toggle = (path: string) => {
+    setCollapsed((previous) => {
+      const next = new Set(previous);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  return (
+    <section>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-1 rounded-sm px-2 py-[3px] text-left text-[11px] font-medium uppercase tracking-wide text-muted-foreground hover:bg-accent/40"
+      >
+        {open ? (
+          <ChevronDown className="size-3.5 shrink-0" aria-hidden="true" />
+        ) : (
+          <ChevronRight className="size-3.5 shrink-0" aria-hidden="true" />
+        )}
+        <span className="min-w-0 flex-1 truncate">
+          {group.id === "staged" ? strings.stagedChanges : strings.changes}
+        </span>
+        <span className="shrink-0 tabular-nums normal-case tracking-normal text-muted-foreground/70">
+          {group.entries.length}
+        </span>
+      </button>
+      {open &&
+        (view === "list" ? (
+          group.entries.map((entry) => (
+            <FileRow
+              key={entry.path}
+              entry={entry}
+              depth={0}
+              showDirectory
+              selected={selectedPath === entry.path}
+              strings={strings}
+              onOpen={() => onOpenDiff(entry, base)}
+            />
+          ))
+        ) : (
+          <TreeRows
+            nodes={tree}
+            depth={0}
+            collapsed={collapsed}
+            selectedPath={selectedPath}
+            onToggle={toggle}
+            onOpenDiff={(entry) => onOpenDiff(entry, base)}
+            strings={strings}
+          />
+        ))}
+    </section>
   );
 }
 
