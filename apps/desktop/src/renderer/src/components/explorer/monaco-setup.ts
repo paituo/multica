@@ -105,71 +105,11 @@ export function currentThemeName(): string {
 }
 
 /**
- * Language id for a path. Monaco ships every `basic-languages` grammar with the
- * default entry point, so these ids always resolve; anything unknown falls back
- * to plain text rather than guessing and mis-colouring.
+ * Language detection lives in `./languages` so it can be unit-tested without
+ * booting Monaco (this module creates a worker and defines themes on import).
+ * Re-exported here because every viewer already imports from this module.
  */
-const BY_EXTENSION: Record<string, string> = {
-  bash: "shell",
-  c: "c",
-  cc: "cpp",
-  cfg: "ini",
-  cjs: "javascript",
-  conf: "ini",
-  cpp: "cpp",
-  cs: "csharp",
-  css: "css",
-  dart: "dart",
-  env: "ini",
-  go: "go",
-  gql: "graphql",
-  graphql: "graphql",
-  h: "c",
-  hpp: "cpp",
-  htm: "html",
-  html: "html",
-  ini: "ini",
-  java: "java",
-  js: "javascript",
-  json: "json",
-  jsonc: "json",
-  jsx: "javascript",
-  kt: "kotlin",
-  less: "less",
-  lua: "lua",
-  md: "markdown",
-  mdx: "markdown",
-  mjs: "javascript",
-  php: "php",
-  properties: "ini",
-  ps1: "powershell",
-  py: "python",
-  rb: "ruby",
-  rs: "rust",
-  scss: "scss",
-  sh: "shell",
-  sql: "sql",
-  svelte: "html",
-  swift: "swift",
-  toml: "ini",
-  ts: "typescript",
-  tsx: "typescript",
-  txt: "plaintext",
-  vue: "html",
-  xml: "xml",
-  yaml: "yaml",
-  yml: "yaml",
-  zsh: "shell",
-};
-
-export function languageFor(path: string): string {
-  const base = path.split("/").pop() ?? path;
-  if (/^dockerfile$/i.test(base)) return "dockerfile";
-  if (/^makefile$/i.test(base)) return "makefile";
-  const dot = base.lastIndexOf(".");
-  if (dot <= 0 || dot === base.length - 1) return "plaintext";
-  return BY_EXTENSION[base.slice(dot + 1).toLowerCase()] ?? "plaintext";
-}
+export { languageFor, MONACO_LANGUAGE_IDS } from "./languages";
 
 /** Shared options so the inline and side-by-side editors cannot drift apart. */
 export const BASE_EDITOR_OPTIONS: monaco.editor.IStandaloneEditorConstructionOptions = {
