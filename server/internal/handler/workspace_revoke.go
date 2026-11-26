@@ -256,6 +256,25 @@ func (h *Handler) revokeMember(ctx context.Context, workspaceID, userID, memberI
 		return empty, err
 	}
 
+	// autopilot_collaborator holds write grants, FK-free like the templates
+	// above. A grant left behind would hand a re-invited user their old write
+	// access back without anyone granting it.
+	if err := qtx.DeleteAutopilotCollaboratorsByMember(ctx, db.DeleteAutopilotCollaboratorsByMemberParams{
+		WorkspaceID: workspaceID,
+		UserID:      userID,
+	}); err != nil {
+		return empty, err
+	}
+
+	// squad_member rows are FK-free too. A row left behind keeps a removed user
+	// on the squad roster and puts a re-invited user back into the squad.
+	if err := qtx.DeleteSquadMembersByMember(ctx, db.DeleteSquadMembersByMemberParams{
+		WorkspaceID: workspaceID,
+		UserID:      userID,
+	}); err != nil {
+		return empty, err
+	}
+
 	// App requests waiting on the member would otherwise let a later OAuth
 	// connect, or a stale tab, resume an agent in a workspace they left.
 	cancelledAppRequests, err := qtx.CancelPendingAppActionRequestsForApprover(ctx, db.CancelPendingAppActionRequestsForApproverParams{

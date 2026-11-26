@@ -92,6 +92,18 @@ func (q *Queries) ArchiveAutopilot(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const countAutopilotRuns = `-- name: CountAutopilotRuns :one
+SELECT count(*) FROM autopilot_run
+WHERE autopilot_id = $1
+`
+
+func (q *Queries) CountAutopilotRuns(ctx context.Context, autopilotID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countAutopilotRuns, autopilotID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createAutopilot = `-- name: CreateAutopilot :one
 INSERT INTO autopilot (
     workspace_id, title, description, assignee_type, assignee_id,
@@ -525,6 +537,28 @@ type DeleteAutopilotCollaboratorParams struct {
 
 func (q *Queries) DeleteAutopilotCollaborator(ctx context.Context, arg DeleteAutopilotCollaboratorParams) error {
 	_, err := q.db.Exec(ctx, deleteAutopilotCollaborator, arg.AutopilotID, arg.UserType, arg.UserID)
+	return err
+}
+
+const deleteAutopilotCollaboratorsByMember = `-- name: DeleteAutopilotCollaboratorsByMember :exec
+DELETE FROM autopilot_collaborator AS c
+USING autopilot AS a
+WHERE c.autopilot_id = a.id
+  AND a.workspace_id = $1
+  AND c.user_type = 'member'
+  AND c.user_id = $2
+`
+
+type DeleteAutopilotCollaboratorsByMemberParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+}
+
+// Collaborator grants carry no FK, so member removal must prune them in the
+// same application transaction: a re-invited user must not regain write access
+// they were granted before. Scoped to the workspace like the subscriber prune.
+func (q *Queries) DeleteAutopilotCollaboratorsByMember(ctx context.Context, arg DeleteAutopilotCollaboratorsByMemberParams) error {
+	_, err := q.db.Exec(ctx, deleteAutopilotCollaboratorsByMember, arg.WorkspaceID, arg.UserID)
 	return err
 }
 
@@ -1555,6 +1589,7 @@ SELECT
     SELECT min(t.next_run_at)
     FROM autopilot_trigger t
     WHERE t.autopilot_id = a.id AND t.enabled AND t.kind = 'schedule'
+      AND a.status = 'active'
   )::timestamptz AS next_run_at,
   COALESCE((
     SELECT r.status
@@ -1591,6 +1626,8 @@ type ListAutopilotsRow struct {
 // next run, last-run outcome) so the page never has to N+1 into the detail
 // endpoint. trigger_kinds/next_run_at only consider ENABLED triggers — the
 // columns answer "how does this fire today", not "what is configured".
+// next_run_at is also left NULL for an autopilot that is not active: the
+// scheduler skips every trigger of a paused one.
 // last_run_status is COALESCEd to ” (never ran) because sqlc cannot infer
 // nullability through a scalar subquery; the handler maps ” back to omitted.
 func (q *Queries) ListAutopilots(ctx context.Context, arg ListAutopilotsParams) ([]ListAutopilotsRow, error) {
@@ -2377,7 +2414,7 @@ func (q *Queries) TouchAutopilotTriggerFiredAt(ctx context.Context, id pgtype.UU
 const updateAutopilot = `-- name: UpdateAutopilot :one
 UPDATE autopilot SET
     title = COALESCE($2, title),
-    description = COALESCE($3, description),
+    description = $3,
     assignee_type = COALESCE($4, assignee_type),
     assignee_id = COALESCE($5::uuid, assignee_id),
     status = COALESCE($6, status),
