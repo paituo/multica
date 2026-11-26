@@ -5,6 +5,7 @@ import {
   dialog,
   ipcMain,
   nativeImage,
+  nativeTheme,
   Notification,
   screen,
 } from "electron";
@@ -750,6 +751,7 @@ function createExplorerWindow(context: ExplorerWindowContext): void {
 
   const systemLocale = getSystemLocale();
   lastKnownSystemLocale = systemLocale;
+  const createdAt = Date.now();
 
   const window = new BrowserWindow({
     width: 1280,
@@ -761,7 +763,26 @@ function createExplorerWindow(context: ExplorerWindowContext): void {
     // The explorer's 40px top bar is this window's title bar, so the native
     // controls sit centred on it exactly like the main window's.
     trafficLightPosition: { x: 16, y: 17 },
-    show: false,
+    /**
+     * Shown immediately, unlike every other window here.
+     *
+     * A dedicated issue window is opened from a menu and the app is the thing
+     * the user just launched, so waiting for `ready-to-show` — which is not
+     * fired until the whole renderer bundle has executed and React has painted
+     * — costs nothing perceptually. This window is opened by a click on a
+     * toolbar button while the user is already looking at the screen; with
+     * `show: false` that click produced no visible effect until the explorer's
+     * own chunk of the bundle was ready, which is the "opening it takes forever"
+     * report. Showing the frame first turns that wait into a window that is
+     * already there and fills in.
+     *
+     * `backgroundColor` is what makes an early show acceptable: without it the
+     * window paints white for the gap. `nativeTheme` is the closest signal the
+     * main process has — the renderer's own theme choice lives in its
+     * localStorage and is not readable here.
+     */
+    show: true,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#09090b" : "#f4f4f5",
     autoHideMenuBar: true,
     ...(is.dev || process.platform === "linux"
       ? { icon: BUNDLED_ICON_PATH }
@@ -771,6 +792,16 @@ function createExplorerWindow(context: ExplorerWindowContext): void {
       systemLocale,
       [encodeExplorerWindowArgument(context)],
     ),
+  });
+
+  // Dev-only timing: "opening it is slow" is a perception report, and these two
+  // marks split it into "the window is not up yet" versus "the window is up but
+  // the renderer has not painted". Cheap enough to keep in a dev build.
+  window.webContents.once("did-finish-load", () => {
+    devLog?.("explorer", `renderer loaded ${Date.now() - createdAt}ms after the click`);
+  });
+  window.once("ready-to-show", () => {
+    devLog?.("explorer", `ready-to-show ${Date.now() - createdAt}ms after the click`);
   });
 
   const webContentsId = window.webContents.id;
