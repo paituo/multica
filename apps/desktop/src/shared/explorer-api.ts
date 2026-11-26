@@ -12,6 +12,7 @@ export const EXPLORER_OPEN_CHANNEL = "window:open-explorer";
 export const EXPLORER_ROOT_INFO_CHANNEL = "explorer:root-info";
 export const EXPLORER_LIST_FILES_CHANNEL = "explorer:list-files";
 export const EXPLORER_READ_FILE_CHANNEL = "explorer:read-file";
+export const EXPLORER_READ_BYTES_CHANNEL = "explorer:read-bytes";
 export const EXPLORER_GIT_STATUS_CHANNEL = "explorer:git-status";
 export const EXPLORER_FILE_PAIR_CHANNEL = "explorer:file-pair";
 export const EXPLORER_FILE_PAIR_AT_CHANNEL = "explorer:file-pair-at";
@@ -29,6 +30,8 @@ export type ExplorerFailureReason =
   | "outside-root"
   | "not-found"
   | "not-a-directory"
+  /** `readFileBytes` only: the file is beyond the single-message size ceiling. */
+  | "too-large"
   | "failed";
 
 export type ExplorerFailure = { ok: false; reason: ExplorerFailureReason; message?: string };
@@ -88,6 +91,28 @@ export type ExplorerFileContent =
   | { kind: "too-large"; size: number };
 
 /**
+ * A file's raw bytes, for the kinds that are not read as text: images, PDFs,
+ * audio and video.
+ *
+ * The bytes cross IPC instead of the renderer being handed a `file://` URL, so
+ * the main process keeps the same containment guarantee it has for `readFile`:
+ * the request is addressed to a target root, `..` and outside paths are
+ * rejected, and a window can only reach the directories it was opened on.
+ *
+ * `mimeType` is derived from the extension, never sniffed — a mismatch only
+ * affects which decoder the browser picks, and the file itself is never
+ * rendered as markup (PDFs go to Chromium's plugin, media to the native
+ * elements, images to `<img>`).
+ */
+export type ExplorerFileBytes = {
+  /** Raw contents. Rendered as a `Blob` on the renderer side. */
+  bytes: Uint8Array;
+  /** `image/png`, `application/pdf`, `video/mp4`, … from the extension. */
+  mimeType: string;
+  size: number;
+};
+
+/**
  * Both documents of one changed file.
  *
  * A unified patch cannot express the two things a real diff editor needs: where
@@ -121,6 +146,15 @@ export type ExplorerApi = {
   rootInfo: () => Promise<ExplorerResult<ExplorerRootInfo>>;
   listFiles: (target: ExplorerTarget) => Promise<ExplorerResult<{ files: string[]; truncated: boolean }>>;
   readFile: (target: ExplorerTarget, path: string) => Promise<ExplorerResult<{ content: ExplorerFileContent }>>;
+  /**
+   * Raw bytes of one file, for the media kinds. Separate from `readFile`
+   * because the text path deliberately refuses binaries and anything over 2 MB,
+   * while a previewable image or PDF is exactly that.
+   */
+  readFileBytes: (
+    target: ExplorerTarget,
+    path: string,
+  ) => Promise<ExplorerResult<{ file: ExplorerFileBytes }>>;
   gitStatus: (target: ExplorerTarget) => Promise<ExplorerResult<ExplorerChangeSet>>;
   filePair: (
     target: ExplorerTarget,

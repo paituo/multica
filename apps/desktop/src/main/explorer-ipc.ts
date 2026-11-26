@@ -10,12 +10,14 @@ import {
   EXPLORER_GIT_LOG_CHANNEL,
   EXPLORER_GIT_STATUS_CHANNEL,
   EXPLORER_LIST_FILES_CHANNEL,
+  EXPLORER_READ_BYTES_CHANNEL,
   EXPLORER_READ_FILE_CHANNEL,
   EXPLORER_REPOS_CHANNEL,
   EXPLORER_ROOT_INFO_CHANNEL,
   type ExplorerChangeSet,
   type ExplorerCommit,
   type ExplorerFailure,
+  type ExplorerFileBytes,
   type ExplorerFileContent,
   type ExplorerFileEntry,
   type ExplorerFilePair,
@@ -64,8 +66,62 @@ export function unregisterExplorerRoots(webContentsId: number): void {
 const MAX_LISTED_FILES = 5_000;
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const BINARY_SNIFF_BYTES = 8_192;
+/**
+ * Ceiling for `readFileBytes`. The bytes are copied to the renderer inside one
+ * IPC message, so this is a memory bound, not a policy: a 200 MB video would
+ * allocate twice (Node buffer + renderer Blob) and freeze both processes while
+ * the message is serialised. Files above it get a message naming the size.
+ */
+const MAX_BYTES_BYTES = 32 * 1024 * 1024;
 const GIT_TIMEOUT_MS = 20_000;
 const GIT_MAX_BUFFER = 16 * 1024 * 1024;
+
+/**
+ * Extension → MIME for the kinds `readFileBytes` serves. Deliberately a table
+ * and not a dependency: the set is closed (browsers only decode what they have
+ * a demuxer for) and a wrong answer here costs a decode failure, not a crash.
+ */
+const MIME_BY_EXTENSION: Record<string, string> = {
+  // Images
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpe: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  avif: "image/avif",
+  bmp: "image/bmp",
+  ico: "image/x-icon",
+  svg: "image/svg+xml",
+  // Documents
+  pdf: "application/pdf",
+  // Video
+  mp4: "video/mp4",
+  m4v: "video/mp4",
+  mov: "video/quicktime",
+  webm: "video/webm",
+  mkv: "video/x-matroska",
+  avi: "video/x-msvideo",
+  ogv: "video/ogg",
+  // Audio
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  m4a: "audio/mp4",
+  ogg: "audio/ogg",
+  oga: "audio/ogg",
+  flac: "audio/flac",
+  aac: "audio/aac",
+  opus: "audio/opus",
+};
+
+function mimeTypeFor(path: string): string {
+  const base = path.toLowerCase().split(/[\\/]/).pop() ?? "";
+  const dot = base.lastIndexOf(".");
+  const ext = dot > 0 ? base.slice(dot + 1) : "";
+  // `application/octet-stream` is what an unknown extension gets: the elements
+  // that consume these bytes fail visibly rather than guessing a decoder.
+  return MIME_BY_EXTENSION[ext] ?? "application/octet-stream";
+}
 
 function ok<T extends object>(value: T): ExplorerResult<T> {
   return Object.assign({ ok: true as const }, value);
@@ -625,6 +681,44 @@ export function setupExplorerIpc(): void {
 
         return ok<{ content: ExplorerFileContent }>({
           content: { kind: "text", text: buffer.toString("utf8"), size: info.size, truncated: false },
+        });
+      } catch {
+        return failure("not-found");
+      }
+    },
+  );
+
+  ipcMain.handle(
+    EXPLORER_READ_BYTES_CHANNEL,
+    async (
+      event,
+      target: unknown,
+      path: unknown,
+    ): Promise<ExplorerResult<{ file: ExplorerFileBytes }>> => {
+      const roots = await rootsForWindow(event);
+      if (!roots) return failure("no-root");
+      const resolved = await rootForTarget(roots, target);
+      if ("ok" in resolved) return resolved;
+
+      // The same containment check as `readFile`: the only paths a renderer can
+      // ask for are ones that resolve inside the root it was opened on.
+      const inside = await resolveInside(resolved.root, path);
+      if (typeof inside !== "string") return inside;
+
+      try {
+        const info = await stat(inside);
+        if (!info.isFile()) return failure("not-found");
+        if (info.size > MAX_BYTES_BYTES) return failure("too-large");
+
+        const buffer = await readFile(inside);
+        return ok<{ file: ExplorerFileBytes }>({
+          file: {
+            // A `Uint8Array` view, not the Buffer: Buffers serialise as a plain
+            // object over IPC and arrive as `{type:"Buffer",data:[…]}`.
+            bytes: new Uint8Array(buffer),
+            mimeType: mimeTypeFor(inside),
+            size: info.size,
+          },
         });
       } catch {
         return failure("not-found");

@@ -30,11 +30,13 @@ import {
   EXPLORER_GIT_STATUS_CHANNEL,
   EXPLORER_LIST_FILES_CHANNEL,
   EXPLORER_OPEN_CHANNEL,
+  EXPLORER_READ_BYTES_CHANNEL,
   EXPLORER_READ_FILE_CHANNEL,
   EXPLORER_REPOS_CHANNEL,
   EXPLORER_ROOT_INFO_CHANNEL,
   type ExplorerApi,
   type ExplorerCommit,
+  type ExplorerFileBytes,
   type ExplorerFileContent,
   type ExplorerFileEntry,
   type ExplorerFilePair,
@@ -420,6 +422,11 @@ const desktopAPI = {
       path: string,
     ): Promise<ExplorerResult<{ content: ExplorerFileContent }>> =>
       ipcRenderer.invoke(EXPLORER_READ_FILE_CHANNEL, target, path),
+    readFileBytes: (
+      target: ExplorerTarget,
+      path: string,
+    ): Promise<ExplorerResult<{ file: ExplorerFileBytes }>> =>
+      ipcRenderer.invoke(EXPLORER_READ_BYTES_CHANNEL, target, path),
     gitStatus: (target: ExplorerTarget) =>
       ipcRenderer.invoke(EXPLORER_GIT_STATUS_CHANNEL, target),
     filePair: (

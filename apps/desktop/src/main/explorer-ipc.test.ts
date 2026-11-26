@@ -34,6 +34,7 @@ const {
   EXPLORER_GIT_LOG_CHANNEL,
   EXPLORER_GIT_STATUS_CHANNEL,
   EXPLORER_LIST_FILES_CHANNEL,
+  EXPLORER_READ_BYTES_CHANNEL,
   EXPLORER_READ_FILE_CHANNEL,
   EXPLORER_REPOS_CHANNEL,
   EXPLORER_ROOT_INFO_CHANNEL,
@@ -126,6 +127,7 @@ describe("setupExplorerIpc registration", () => {
         EXPLORER_ROOT_INFO_CHANNEL,
         EXPLORER_LIST_FILES_CHANNEL,
         EXPLORER_READ_FILE_CHANNEL,
+        EXPLORER_READ_BYTES_CHANNEL,
         EXPLORER_GIT_STATUS_CHANNEL,
         EXPLORER_FILE_PAIR_CHANNEL,
         EXPLORER_FILE_PAIR_AT_CHANNEL,
@@ -567,5 +569,48 @@ describe("explorer:repos", () => {
       pending: 2,
       initialized: true,
     });
+  });
+});
+
+describe("explorer:read-bytes", () => {
+  type Bytes = { ok: true; file: { bytes: Uint8Array; mimeType: string; size: number } };
+
+  it("returns the raw bytes with a MIME type from the extension", async () => {
+    const result = await call<Bytes>(EXPLORER_READ_BYTES_CHANNEL, "worktree", "logo.png");
+    expect(result.ok).toBe(true);
+    expect(result.file.mimeType).toBe("image/png");
+    expect(result.file.size).toBe(6);
+    // A PNG signature, byte for byte: this path must not decode as UTF-8 on the
+    // way through, which is exactly what `readFile` would refuse to do.
+    expect([...result.file.bytes]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]);
+  });
+
+  it("refuses a path outside the window's root", async () => {
+    const result = await call<{ ok: false; reason: string }>(
+      EXPLORER_READ_BYTES_CHANNEL,
+      "worktree",
+      "../../etc/passwd",
+    );
+    expect(result).toMatchObject({ ok: false, reason: "outside-root" });
+  });
+
+  it("reports a missing file as not-found", async () => {
+    const result = await call<{ ok: false; reason: string }>(
+      EXPLORER_READ_BYTES_CHANNEL,
+      "worktree",
+      "nope.png",
+    );
+    expect(result).toMatchObject({ ok: false, reason: "not-found" });
+  });
+
+  it("refuses a window that was never given roots", async () => {
+    const handler = handlers.get(EXPLORER_READ_BYTES_CHANNEL)!;
+    // A sender with no registered root is the main window: the channel exists
+    // there too, but it must not reach any directory.
+    const result = (await handler({ sender: { id: 999_999 } }, "worktree", "logo.png")) as {
+      ok: false;
+      reason: string;
+    };
+    expect(result).toMatchObject({ ok: false, reason: "no-root" });
   });
 });
