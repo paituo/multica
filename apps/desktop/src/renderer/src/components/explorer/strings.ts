@@ -81,6 +81,7 @@ const ZH = {
   collapseAll: "全部折叠",
   commitFiles: "个文件",
   resizeSidebar: "调整侧栏宽度（双击复位）",
+  mediaTooLarge: "文件超过 32 MB，无法在窗口内预览",
 };
 
 const EN: Record<keyof typeof ZH, string> = {
@@ -155,6 +156,7 @@ const EN: Record<keyof typeof ZH, string> = {
   collapseAll: "Collapse all",
   commitFiles: "files",
   resizeSidebar: "Resize sidebar (double-click to reset)",
+  mediaTooLarge: "File is over 32 MB — too large to preview in this window",
 };
 
 export type ExplorerStrings = Record<keyof typeof ZH, string>;

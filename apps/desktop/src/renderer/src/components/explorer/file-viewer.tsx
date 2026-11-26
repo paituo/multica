@@ -11,6 +11,8 @@ import { Markdown } from "@multica/ui/markdown";
 import type { ExplorerTarget } from "../../../../shared/explorer-api";
 import { DEFAULT_CODE_FONT_SIZE, useExplorerViewPrefs } from "@/stores/explorer-view-prefs";
 import { CodeToolbar } from "./code-toolbar";
+import { fileSurfaceFor, hasSourceMode, isMediaSurface } from "./file-kind";
+import { FileStage } from "./file-stage";
 import { BASE_EDITOR_OPTIONS, currentThemeName, languageFor, monaco } from "./monaco-setup";
 import { PreviewFindBar } from "./preview-find-bar";
 import { useHighlightMatches, usePreviewMatches } from "./preview-find";
@@ -83,10 +85,26 @@ export function FileViewer({
 
   const language = languageFor(path);
   const isMarkdown = language === "markdown";
+  /**
+   * Which renderer this tab uses. `code` and `markdown` are Monaco's; the other
+   * seven kinds come from the attachment viewer's table (`file-kind.ts`), whose
+   * media half never goes through `readFile` at all.
+   */
+  const surface = fileSurfaceFor(path);
+  const media = isMediaSurface(surface);
   const text = state.status === "text" ? state.text : null;
   const hasText = text !== null;
-  // A non-markdown file keeps the preference but never honours it.
-  const previewing = isMarkdown && previewPref && hasText;
+  /**
+   * Rendered form for the kinds that have one. Markdown keeps its persisted
+   * preference (the reader's habit carries across files); table / tree / HTML
+   * open on the rendered side, because recognising those kinds is the only
+   * reason they are not just text.
+   */
+  const [stageOpen, setStageOpen] = useState(true);
+  const richAvailable = hasSourceMode(surface);
+  const richWanted = isMarkdown ? previewPref : stageOpen;
+  const previewing = richAvailable && richWanted && hasText;
+  const setRich = isMarkdown ? setPreview : setStageOpen;
   /** 1 at the reference font size; the preview scales its whole subtree by it. */
   const previewRatio = fontSize / DEFAULT_CODE_FONT_SIZE;
 
@@ -95,7 +113,10 @@ export function FileViewer({
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
   const [findIndex, setFindIndex] = useState(0);
-  const matches = usePreviewMatches(previewRef, previewing && findOpen, findQuery);
+  // Text search inside a rendered pane is a Markdown affordance; a table's own
+  // column sort and a tree's collapse state are what those views need instead.
+  const findable = previewing && isMarkdown;
+  const matches = usePreviewMatches(previewRef, findable && findOpen, findQuery);
   const activeMatch = matches.length > 0 ? matches[Math.min(findIndex, matches.length - 1)] : undefined;
   useHighlightMatches(matches, activeMatch);
 
@@ -140,6 +161,10 @@ export function FileViewer({
 
   useEffect(() => {
     let cancelled = false;
+    // Media kinds are read as bytes by `FileStage`; `readFile` would refuse them
+    // as binary and the tab would say "cannot preview" about a file it is about
+    // to show perfectly well.
+    if (media) return;
     // Silent refresh: a token bump (window focus, the refresh button) must not
     // blank a document that is already on screen. The editor keeps its model
     // until the new text arrives, and its scroll position survives the swap.
@@ -168,7 +193,7 @@ export function FileViewer({
     return () => {
       cancelled = true;
     };
-  }, [target, path, refreshToken, strings]);
+  }, [target, path, refreshToken, strings, media]);
 
   useMonacoTheme();
   useCtrlWheelZoom(hostRef, zoomCode, hasText && !previewing);
@@ -286,7 +311,13 @@ export function FileViewer({
   // --- render --------------------------------------------------------------
 
   const previewToggle =
-    isMarkdown && hasText ? { previewing, onChange: setPreview } : undefined;
+    richAvailable && hasText ? { previewing, onChange: setRich } : undefined;
+
+  // Images, PDFs and media own their whole tab: no source to show, and Monaco's
+  // toolbar (font size, wrap) means nothing to them.
+  if (media) {
+    return <FileStage target={target} path={path} surface={surface} text={null} strings={strings} />;
+  }
 
   if (state.status === "loading" || state.status === "note" || state.status === "error") {
     return (
@@ -310,7 +341,7 @@ export function FileViewer({
             className={previewing ? "hidden" : "h-full w-full"}
             data-file-host="monaco"
           />
-          {previewMounted && (
+          {isMarkdown && previewMounted && (
             <div
               ref={previewRef}
               // Pre-rendered but not selected: mounted, not displayed, so the
@@ -358,6 +389,20 @@ export function FileViewer({
               </article>
             </div>
           )}
+          {previewing && !isMarkdown && (
+            // Table / tree / HTML. Mounted only while selected: unlike the
+            // Markdown pane there is nothing to warm up, and a table of 20 k rows
+            // should not be built behind a source view nobody toggled.
+            <div className="h-full min-h-0" data-file-host="stage">
+              <FileStage
+                target={target}
+                path={path}
+                surface={surface}
+                text={state.text}
+                strings={strings}
+              />
+            </div>
+          )}
           {previewing && findOpen && (
             <PreviewFindBar
               strings={strings}
@@ -379,9 +424,9 @@ export function FileViewer({
         </ContextMenuTrigger>
 
         <ContextMenuContent>
-          {isMarkdown && (
+          {richAvailable && (
             <>
-              <ContextMenuItem onClick={() => setPreview(!previewPref)}>
+              <ContextMenuItem onClick={() => setRich(!richWanted)}>
                 {previewing ? <Code /> : <Eye />}
                 {previewing ? strings.viewSource : strings.viewPreview}
               </ContextMenuItem>
