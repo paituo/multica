@@ -2,6 +2,7 @@ import { resolve } from "path";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { monacoWithoutLanguageServices } from "./electron.vite.monaco";
 
 export default defineConfig({
   main: {
@@ -24,12 +25,17 @@ export default defineConfig({
       port: Number(process.env.DESKTOP_RENDERER_PORT) || 5173,
       strictPort: true,
     },
-    plugins: [react(), tailwindcss()],
+    plugins: [react(), tailwindcss(), monacoWithoutLanguageServices()],
     resolve: {
       alias: {
         "@": resolve("src/renderer/src"),
       },
       dedupe: ["react", "react-dom", "@tanstack/react-query"],
     },
+    // The plugin above only sees module ids Vite resolves itself, and a
+    // pre-bundled dependency is opaque to it. Monaco has to stay unbundled for
+    // the language services to be dropped from the dev graph as well as from
+    // `build`; production output is unaffected either way.
+    optimizeDeps: { exclude: ["monaco-editor"] },
   },
 });

@@ -30,13 +30,69 @@ declare global {
 }
 
 // Monaco asks for a worker per language service. The explorer only needs the
-// base editor worker (no TypeScript/JSON/CSS language services are enabled:
-// browsers cannot run them over a git blob and the extra ~3 MB is dead weight).
+// base editor worker: the TypeScript/JSON/CSS/HTML services are kept out of the
+// bundle by `electron.vite.monaco.ts`, because a read-only blob viewer has no
+// project for them to analyse and their workers alone cost ~9 MB.
 self.MonacoEnvironment = {
   getWorker() {
     return new editorWorker();
   },
 };
+
+/**
+ * Belt and braces for the build-time exclusion in `electron.vite.monaco.ts`.
+ *
+ * That plugin keeps the four language services the `monaco-editor` barrel
+ * registers (TypeScript, JSON, CSS, HTML) out of the module graph, which is
+ * what actually fixes the worker errors: measured in the harness, opening a
+ * `.ts` file raised `Missing requestHandler or method: provideInlayHints`,
+ * then `getSyntacticDiagnostics`, and a `.json` file raised `resetSchema`.
+ * Nothing here can substitute for it — `setModeConfiguration({})` was tried
+ * first and still let `resetSchema` through, because the JSON mode sends that
+ * while it sets up, before any provider is consulted.
+ *
+ * What is left is the case where some other entry point imports the barrel
+ * without going through the build hook (a test runner, a scratch page): the
+ * services come back, and every provider then posts to the editor worker,
+ * which has no handler for any of it. Disabling every mode flag stops the
+ * providers that *are* reached that way, so the failure degrades to missing
+ * hovers rather than a thrown worker error.
+ *
+ * The namespaces are reached with a bracket lookup because when the build hook
+ * does its job they do not exist at all, and a typed access would read as if
+ * they did.
+ */
+type ModeConfiguration = Record<string, boolean>;
+interface LanguageDefaults {
+  setModeConfiguration?(configuration: ModeConfiguration): void;
+}
+interface LanguageNamespace {
+  defaults?: LanguageDefaults;
+  typescriptDefaults?: LanguageDefaults;
+  javascriptDefaults?: LanguageDefaults;
+  cssDefaults?: LanguageDefaults;
+  lessDefaults?: LanguageDefaults;
+  scssDefaults?: LanguageDefaults;
+  htmlDefaults?: LanguageDefaults;
+  handlebarDefaults?: LanguageDefaults;
+  razorDefaults?: LanguageDefaults;
+}
+
+function disableLanguageServices(): void {
+  const languages = monaco.languages as unknown as Record<string, LanguageNamespace | undefined>;
+  const namespaces = ["typescript", "json", "css", "html"];
+  for (const namespace of namespaces) {
+    const group = languages[namespace];
+    if (!group) continue;
+    for (const value of Object.values(group)) {
+      // Every entry of these namespaces is a `LanguageServiceDefaultsImpl`;
+      // `defaults` is the one non-defaults field and simply lacks the method.
+      value?.setModeConfiguration?.({});
+    }
+  }
+}
+
+disableLanguageServices();
 
 export const LIGHT_THEME = "multica-light";
 export const DARK_THEME = "multica-dark";
@@ -129,6 +185,18 @@ export const BASE_EDITOR_OPTIONS: monaco.editor.IStandaloneEditorConstructionOpt
   selectionHighlight: false,
   quickSuggestions: false,
   suggestOnTriggerCharacters: false,
+  /**
+   * Off, because nothing can answer.
+   *
+   * Inlay hints come from a language service, and the explorer deliberately
+   * ships only `editor.worker` (see `MonacoEnvironment` above). With the
+   * default `"on"`, every render posts `provideInlayHints` to a worker that has
+   * no handler for it — measured in the visual harness: opening a `.ts` file
+   * produced `Error: Missing requestHandler or method: provideInlayHints` and
+   * Vite's overlay covered the window. In the packaged app the same failed
+   * request is merely silent, which is not better.
+   */
+  inlayHints: { enabled: "off" },
   // `automaticLayout` is a ResizeObserver under the hood. It is what makes a
   // window resize re-wrap and re-measure the diff, which the hand-written
   // renderer had to do by hand and got wrong.
