@@ -101,7 +101,7 @@ function ExplorerFrame({
           style={{ width: TRAFFIC_LIGHT_CLEARANCE, WebkitAppRegion: "drag" } as CSSProperties}
         />
         <div className="min-w-0 flex-1 truncate px-2 text-caption text-muted-foreground">
-          {strings.task}
+          {strings.taskDetail}
         </div>
         <div
           className="h-full flex-1"
@@ -140,10 +140,10 @@ function ExplorerBody({
     if (initialized.current) return;
     initialized.current = true;
     const saved = loadExplorerTabs(context.issueId);
-    const taskTab: ExplorerTab = { id: TASK_TAB_ID, kind: "task", title: strings.task };
+    const taskTab: ExplorerTab = { id: TASK_TAB_ID, kind: "task", title: strings.taskDetail };
     const restored = saved?.tabs.filter((tab) => tab.id !== TASK_TAB_ID) ?? [];
     useExplorerTabs.getState().reset([taskTab, ...restored], saved?.activeId ?? TASK_TAB_ID);
-  }, [context.issueId, strings.task]);
+  }, [context.issueId, strings.taskDetail]);
 
   useEffect(() => {
     return useExplorerTabs.subscribe((state) => {
@@ -542,7 +542,7 @@ function ExplorerRail({
       </RailButton>
       <RailButton
         active={panel === "changes"}
-        label={strings.changes}
+        label={strings.git}
         onClick={() => onChange("changes")}
       >
         <GitBranch className="size-4" aria-hidden="true" />
