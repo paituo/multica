@@ -47,5 +47,22 @@ export type {
 } from "./preview-sequence-context";
 export { AttachmentCard } from "./attachment-card";
 export type { AttachmentCardProps } from "./attachment-card";
+/*
+ * Content-level renderers, exported so a second host can show the same file
+ * kinds the attachment viewer does. The desktop task explorer is that host: it
+ * reads from the local filesystem through its own IPC instead of from an
+ * attachment record, so it needs the table / tree / kind decisions without the
+ * viewer's chrome, sequence pager or download plumbing.
+ */
+export { TablePreview } from "./table-preview";
+export { StructuredTree } from "./structured-tree";
+export { parseStructured, type StructuredParse } from "./utils/parse-structured";
+export {
+  getPreviewKind,
+  structuredFormat,
+  tableDelimiter,
+  type PreviewKind,
+  type StructuredFormat,
+} from "./utils/preview";
 export { Attachment } from "./attachment";
 export type { AttachmentInput, AttachmentProps } from "./attachment";
