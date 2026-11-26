@@ -42,6 +42,7 @@ import {
   useExplorerTabs,
   type ExplorerTab,
 } from "@/stores/explorer-tabs";
+import { useExplorerViewPrefs } from "@/stores/explorer-view-prefs";
 import { ChangeList } from "./change-list";
 import { CommitGraph } from "./commit-graph";
 import { DiffView } from "./diff-view";
@@ -49,6 +50,7 @@ import { FileTree, parentDirectories } from "./file-tree";
 import { FileViewer } from "./file-viewer";
 import { FilterInput } from "./filter-input";
 import { RepoList } from "./repo-list";
+import { SidebarResizer } from "./sidebar-resizer";
 import type { FileStatusDecoration } from "./status-badge";
 import { useExplorerStrings, type ExplorerStrings } from "./strings";
 import { FileTimeline } from "./timeline";
@@ -183,6 +185,20 @@ function ExplorerBody({
     setPanel(next);
     setMountedPanels((previous) => (previous.includes(next) ? previous : [...previous, next]));
   }, []);
+
+  const storedSidebarWidth = useExplorerViewPrefs((pref) => pref.sidebarWidth);
+  const setSidebarWidth = useExplorerViewPrefs((pref) => pref.setSidebarWidth);
+  const resetSidebarWidth = useExplorerViewPrefs((pref) => pref.resetSidebarWidth);
+  // Dragging tracks the cursor in local state and only persists on release; see
+  // `SidebarResizer`. Kept in sync with the store for the non-drag paths
+  // (double-click reset, arrow keys).
+  const [sidebarWidth, setLiveSidebarWidth] = useState(storedSidebarWidth);
+  /** Last width seen during a drag; `onCommit` reads it after the pointer is up. */
+  const liveSidebarWidth = useRef(storedSidebarWidth);
+  useEffect(() => {
+    liveSidebarWidth.current = storedSidebarWidth;
+    setLiveSidebarWidth(storedSidebarWidth);
+  }, [storedSidebarWidth]);
 
   const tabs = useExplorerTabs((state) => state.tabs);
   const activeId = useExplorerTabs((state) => state.activeId);
@@ -326,7 +342,10 @@ function ExplorerBody({
       <div className="flex min-h-0 flex-1">
         <ExplorerRail panel={panel} onChange={selectPanel} strings={strings} />
         <div className="mr-2 mb-2 flex min-h-0 flex-1 overflow-hidden rounded-page bg-page-canvas shadow-[var(--page-shadow,var(--surface-shadow))] ring-1 ring-page-border">
-          <aside className="flex w-[280px] shrink-0 flex-col border-r border-border">
+          <aside
+            className="flex min-w-0 shrink-0 flex-col border-r border-border"
+            style={{ width: sidebarWidth }}
+          >
             {rootInfo?.worktreeGone && (
               <p className="border-b border-border bg-muted/60 px-3 py-1.5 text-[11px] leading-4 text-muted-foreground">
                 {strings.worktreeGone}
@@ -411,6 +430,16 @@ function ExplorerBody({
               )}
             </div>
           </aside>
+          <SidebarResizer
+            width={sidebarWidth}
+            onResize={(width) => {
+              liveSidebarWidth.current = width;
+              setLiveSidebarWidth(width);
+            }}
+            onCommit={() => setSidebarWidth(liveSidebarWidth.current)}
+            onReset={resetSidebarWidth}
+            label={strings.resizeSidebar}
+          />
           <section
             role="tabpanel"
             id={TABPANEL_ID}

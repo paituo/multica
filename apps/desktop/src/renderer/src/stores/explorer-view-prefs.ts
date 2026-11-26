@@ -26,6 +26,23 @@ export type DiffLayout = "split" | "inline";
 /** Below this width a two-column diff cannot show a useful amount of code. */
 export const SPLIT_MIN_WIDTH = 640;
 
+/**
+ * Bounds for the file/changes sidebar.
+ *
+ * It used to be a hard 280 px, which is comfortably wide for file names and far
+ * too narrow for `path/to/thing.test.tsx`, so the only recourse was a wider
+ * window. The floor keeps the tree readable; the ceiling keeps the viewer from
+ * being squeezed out in a 900 px-wide window (the window's `minWidth`).
+ */
+export const MIN_SIDEBAR_WIDTH = 200;
+export const MAX_SIDEBAR_WIDTH = 560;
+export const DEFAULT_SIDEBAR_WIDTH = 280;
+
+export function clampSidebarWidth(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_SIDEBAR_WIDTH;
+  return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, Math.round(value)));
+}
+
 type Stored = {
   codeFontSize: number;
   wordWrap: boolean;
@@ -56,6 +73,8 @@ type Stored = {
    * hiding them is a common way to read a change set.
    */
   showUntracked: boolean;
+  /** Width of the file/changes sidebar, in CSS pixels. */
+  sidebarWidth: number;
 };
 
 const STORAGE_KEY = "multica_explorer_view_prefs";
@@ -69,6 +88,7 @@ const DEFAULTS: Stored = {
   collapseUnchanged: true,
   markdownPreview: false,
   showUntracked: true,
+  sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
 };
 
 export function clampFontSize(value: number): number {
@@ -100,6 +120,9 @@ export function readViewPrefs(): Stored {
         typeof parsed.markdownPreview === "boolean" ? parsed.markdownPreview : DEFAULTS.markdownPreview,
       showUntracked:
         typeof parsed.showUntracked === "boolean" ? parsed.showUntracked : DEFAULTS.showUntracked,
+      sidebarWidth: clampSidebarWidth(
+        typeof parsed.sidebarWidth === "number" ? parsed.sidebarWidth : DEFAULTS.sidebarWidth,
+      ),
     };
   } catch {
     return { ...DEFAULTS };
@@ -132,6 +155,8 @@ type ExplorerViewPrefsState = Stored & {
   toggleMarkdownPreview: () => void;
   setShowUntracked: (value: boolean) => void;
   toggleShowUntracked: () => void;
+  setSidebarWidth: (width: number) => void;
+  resetSidebarWidth: () => void;
 };
 
 const initial = readViewPrefs();
@@ -187,6 +212,13 @@ export const useExplorerViewPrefs = create<ExplorerViewPrefsState>((set, get) =>
     writeViewPrefs({ ...get(), showUntracked });
   },
   toggleShowUntracked: () => get().setShowUntracked(!get().showUntracked),
+  setSidebarWidth: (width) => {
+    const sidebarWidth = clampSidebarWidth(width);
+    if (sidebarWidth === get().sidebarWidth) return;
+    set({ sidebarWidth });
+    writeViewPrefs({ ...get(), sidebarWidth });
+  },
+  resetSidebarWidth: () => get().setSidebarWidth(DEFAULT_SIDEBAR_WIDTH),
 }));
 
 /** Percentage shown in the toolbar; 12 px is the reference size. */

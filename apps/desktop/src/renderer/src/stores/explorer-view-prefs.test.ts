@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_CODE_FONT_SIZE,
+  DEFAULT_SIDEBAR_WIDTH,
   MAX_CODE_FONT_SIZE,
   MIN_CODE_FONT_SIZE,
   clampFontSize,
+  clampSidebarWidth,
   fontSizePercent,
   readViewPrefs,
   useExplorerViewPrefs,
@@ -20,6 +22,7 @@ beforeEach(() => {
     collapseUnchanged: true,
     markdownPreview: false,
     showUntracked: true,
+    sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   });
 });
 
@@ -74,7 +77,28 @@ describe("useExplorerViewPrefs", () => {
       collapseUnchanged: true,
       markdownPreview: false,
       showUntracked: true,
+      sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
     });
+  });
+
+  it("remembers the sidebar width, and clamps a stored one", () => {
+    useExplorerViewPrefs.getState().setSidebarWidth(412);
+    expect(readViewPrefs().sidebarWidth).toBe(412);
+    expect(
+      JSON.parse(window.localStorage.getItem("multica_explorer_view_prefs") ?? "{}").sidebarWidth,
+    ).toBe(412);
+
+    // A value written by an older build, or hand-edited, must not leave the
+    // sidebar at a width the viewer cannot survive.
+    window.localStorage.setItem(
+      "multica_explorer_view_prefs",
+      JSON.stringify({ sidebarWidth: 4_000 }),
+    );
+    expect(readViewPrefs().sidebarWidth).toBe(560);
+    expect(clampSidebarWidth(4_000)).toBe(560);
+
+    useExplorerViewPrefs.getState().resetSidebarWidth();
+    expect(useExplorerViewPrefs.getState().sidebarWidth).toBe(DEFAULT_SIDEBAR_WIDTH);
   });
 
   it("remembers the untracked-files switch", () => {

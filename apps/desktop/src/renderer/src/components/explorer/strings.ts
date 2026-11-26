@@ -80,6 +80,7 @@ const ZH = {
   expandAll: "全部展开",
   collapseAll: "全部折叠",
   commitFiles: "个文件",
+  resizeSidebar: "调整侧栏宽度（双击复位）",
 };
 
 const EN: Record<keyof typeof ZH, string> = {
@@ -153,6 +154,7 @@ const EN: Record<keyof typeof ZH, string> = {
   expandAll: "Expand all",
   collapseAll: "Collapse all",
   commitFiles: "files",
+  resizeSidebar: "Resize sidebar (double-click to reset)",
 };
 
 export type ExplorerStrings = Record<keyof typeof ZH, string>;
