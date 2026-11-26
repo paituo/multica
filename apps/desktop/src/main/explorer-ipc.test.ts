@@ -26,9 +26,18 @@ vi.mock("electron", () => ({
   },
 }));
 
-const { EXPLORER_FILE_PAIR_CHANNEL, EXPLORER_GIT_STATUS_CHANNEL, EXPLORER_LIST_FILES_CHANNEL, EXPLORER_READ_FILE_CHANNEL, EXPLORER_ROOT_INFO_CHANNEL } = await import(
-  "../shared/explorer-api"
-);
+const {
+  EXPLORER_COMMIT_FILES_CHANNEL,
+  EXPLORER_FILE_HISTORY_CHANNEL,
+  EXPLORER_FILE_PAIR_AT_CHANNEL,
+  EXPLORER_FILE_PAIR_CHANNEL,
+  EXPLORER_GIT_LOG_CHANNEL,
+  EXPLORER_GIT_STATUS_CHANNEL,
+  EXPLORER_LIST_FILES_CHANNEL,
+  EXPLORER_READ_FILE_CHANNEL,
+  EXPLORER_REPOS_CHANNEL,
+  EXPLORER_ROOT_INFO_CHANNEL,
+} = await import("../shared/explorer-api");
 const { registerExplorerRoots, setupExplorerIpc, unregisterExplorerRoots } = await import("./explorer-ipc");
 
 const WEB_CONTENTS_ID = 4242;
@@ -119,6 +128,11 @@ describe("setupExplorerIpc registration", () => {
         EXPLORER_READ_FILE_CHANNEL,
         EXPLORER_GIT_STATUS_CHANNEL,
         EXPLORER_FILE_PAIR_CHANNEL,
+        EXPLORER_FILE_PAIR_AT_CHANNEL,
+        EXPLORER_FILE_HISTORY_CHANNEL,
+        EXPLORER_GIT_LOG_CHANNEL,
+        EXPLORER_COMMIT_FILES_CHANNEL,
+        EXPLORER_REPOS_CHANNEL,
       ].sort(),
     );
   });
@@ -353,5 +367,155 @@ describe("window binding", () => {
 
   it("does not leave git artefacts behind", () => {
     expect(readdirSync(repo).length).toBeGreaterThan(0);
+  });
+});
+
+describe("explorer:git-log", () => {
+  type Log = {
+    ok: true;
+    commits: { hash: string; shortHash: string; subject: string; refs: string[]; parents: string[] }[];
+    branch: string | null;
+    truncated: boolean;
+  };
+
+  it("lists the branch newest first and names it", async () => {
+    const result = await call<Log>(EXPLORER_GIT_LOG_CHANNEL, "worktree");
+    expect(result.branch).toBe(BASE_BRANCH);
+    expect(result.truncated).toBe(false);
+    expect(result.commits.map((commit) => commit.subject)).toEqual([
+      "agent: change app and add file",
+      BASELINE_MESSAGE,
+      "initial",
+    ]);
+    expect(result.commits[0]?.hash).toBe(git("rev-parse", "HEAD"));
+  });
+
+  it("decorates the checked-out commit with the branch name", async () => {
+    const result = await call<Log>(EXPLORER_GIT_LOG_CHANNEL, "worktree");
+    // `%D` renders `HEAD -> agent/agent/t1`; the arrow is a pointer, not a name.
+    expect(result.commits[0]?.refs).toEqual([BASE_BRANCH]);
+    expect(result.commits[2]?.refs).toEqual([]);
+  });
+
+  it("reports truncation instead of silently cutting the list", async () => {
+    const result = await call<Log>(EXPLORER_GIT_LOG_CHANNEL, "worktree", { limit: 1 });
+    expect(result.commits).toHaveLength(1);
+    expect(result.truncated).toBe(true);
+  });
+});
+
+describe("explorer:file-history", () => {
+  type History = { ok: true; revisions: { hash: string; subject: string }[]; truncated: boolean };
+
+  it("lists the commits that touched one file, newest first", async () => {
+    const result = await call<History>(EXPLORER_FILE_HISTORY_CHANNEL, "worktree", "src/app.ts");
+    expect(result.revisions.map((revision) => revision.subject)).toEqual([
+      "agent: change app and add file",
+      "initial",
+    ]);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("leaves out commits that did not touch the file", async () => {
+    // The baseline commit only adds baseline.txt.
+    const result = await call<History>(EXPLORER_FILE_HISTORY_CHANNEL, "worktree", "src/app.ts");
+    expect(result.revisions.map((revision) => revision.hash)).not.toContain(baselineSha);
+  });
+
+  it("truncates on the same `limit` contract as the log", async () => {
+    const result = await call<History>(EXPLORER_FILE_HISTORY_CHANNEL, "worktree", "src/app.ts", {
+      limit: 1,
+    });
+    expect(result.revisions).toHaveLength(1);
+    expect(result.truncated).toBe(true);
+  });
+
+  it("refuses a path outside the root", async () => {
+    expect(
+      await call(EXPLORER_FILE_HISTORY_CHANNEL, "worktree", "../../../etc/hosts"),
+    ).toEqual({ ok: false, reason: "outside-root" });
+  });
+});
+
+describe("explorer:commit-files", () => {
+  type CommitFiles = {
+    ok: true;
+    files: { path: string; status: string; additions: number | null; deletions: number | null }[];
+  };
+
+  it("lists what a commit changed", async () => {
+    const result = await call<CommitFiles>(EXPLORER_COMMIT_FILES_CHANNEL, "worktree", baselineSha);
+    expect(result.files.map((file) => [file.path, file.status])).toEqual([["baseline.txt", "A"]]);
+    expect(result.files[0]?.additions).toBe(1);
+  });
+
+  it("rejects anything that is not a hex revision", async () => {
+    // `HEAD:../../x` would be a different object spec if it reached `git show`.
+    expect(await call(EXPLORER_COMMIT_FILES_CHANNEL, "worktree", "HEAD")).toEqual({
+      ok: false,
+      reason: "failed",
+      message: "Invalid revision",
+    });
+  });
+});
+
+describe("explorer:file-pair-at", () => {
+  type Pair = { ok: true; original: string; modified: string; originalSize: number; problem: null | string };
+
+  it("diffs a file against the commit that changed it", async () => {
+    const head = git("rev-parse", "HEAD");
+    const pair = await call<Pair>(EXPLORER_FILE_PAIR_AT_CHANNEL, "worktree", "src/app.ts", head);
+    expect(pair.original).toBe("export const a = 1;\n");
+    expect(pair.modified).toBe("export const a = 2;\n");
+    expect(pair.problem).toBeNull();
+  });
+
+  it("treats a file added by the commit as an empty base", async () => {
+    const head = git("rev-parse", "HEAD");
+    const pair = await call<Pair>(EXPLORER_FILE_PAIR_AT_CHANNEL, "worktree", "src/added.ts", head);
+    expect(pair.original).toBe("");
+    expect(pair.originalSize).toBe(0);
+    expect(pair.modified).toBe("export const b = 2;\n");
+  });
+
+  it("reads a root commit as an addition rather than an error", async () => {
+    // The first commit has no parent, so `<rev>^` does not resolve.
+    const root = git("rev-list", "--max-parents=0", "HEAD");
+    const pair = await call<Pair>(EXPLORER_FILE_PAIR_AT_CHANNEL, "worktree", "src/app.ts", root);
+    expect(pair.original).toBe("");
+    expect(pair.modified).toBe("export const a = 1;\n");
+  });
+
+  it("rejects anything that is not a hex revision", async () => {
+    expect(
+      await call(EXPLORER_FILE_PAIR_AT_CHANNEL, "worktree", "src/app.ts", "HEAD~1"),
+    ).toEqual({ ok: false, reason: "failed", message: "Invalid revision" });
+  });
+});
+
+describe("explorer:repos", () => {
+  type Repos = {
+    ok: true;
+    repos: {
+      id: string;
+      path: string;
+      isRoot: boolean;
+      branch: string | null;
+      pending: number | null;
+      initialized: boolean;
+    }[];
+  };
+
+  it("reports the task repository with its branch and pending count", async () => {
+    const result = await call<Repos>(EXPLORER_REPOS_CHANNEL, "worktree");
+    expect(result.repos).toHaveLength(1);
+    expect(result.repos[0]).toMatchObject({
+      id: "root",
+      isRoot: true,
+      branch: BASE_BRANCH,
+      // `makeDirty()` leaves one modified file and one untracked file.
+      pending: 2,
+      initialized: true,
+    });
   });
 });

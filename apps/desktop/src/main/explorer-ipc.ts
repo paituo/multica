@@ -3,21 +3,34 @@ import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
 import {
+  EXPLORER_COMMIT_FILES_CHANNEL,
+  EXPLORER_FILE_HISTORY_CHANNEL,
+  EXPLORER_FILE_PAIR_AT_CHANNEL,
   EXPLORER_FILE_PAIR_CHANNEL,
+  EXPLORER_GIT_LOG_CHANNEL,
   EXPLORER_GIT_STATUS_CHANNEL,
   EXPLORER_LIST_FILES_CHANNEL,
   EXPLORER_READ_FILE_CHANNEL,
+  EXPLORER_REPOS_CHANNEL,
   EXPLORER_ROOT_INFO_CHANNEL,
   type ExplorerChangeSet,
+  type ExplorerCommit,
   type ExplorerFailure,
   type ExplorerFileContent,
   type ExplorerFileEntry,
   type ExplorerFilePair,
+  type ExplorerRepoEntry,
   type ExplorerResult,
   type ExplorerRootInfo,
   type ExplorerTarget,
 } from "../shared/explorer-api";
-import { parseNameStatus, parseNumstat, parsePorcelain } from "./explorer-git-parse";
+import {
+  parseCommitLog,
+  parseNameStatus,
+  parseNumstat,
+  parsePorcelain,
+  parseSubmoduleStatus,
+} from "./explorer-git-parse";
 import { existingDirectory, failure, resolveInside } from "./explorer-paths";
 
 /**
@@ -268,6 +281,145 @@ async function collectBranchChanges(root: string, branch: string): Promise<Explo
     base,
     baseStrategy: strategy,
   };
+}
+
+// --- history, graph and repositories -------------------------------------
+
+const DEFAULT_LOG_LIMIT = 100;
+const DEFAULT_HISTORY_LIMIT = 50;
+const MAX_LOG_LIMIT = 500;
+
+/**
+ * One record per commit: hash, short hash, author, ISO date, subject,
+ * decorations, parents. Fields are separated by 0x1f — see
+ * `parseCommitLog` for why a tab or a pipe will not do.
+ */
+const COMMIT_FORMAT = "--format=%H%x1f%h%x1f%an%x1f%aI%x1f%s%x1f%D%x1f%P";
+
+function clampLimit(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : fallback;
+  return Math.min(MAX_LOG_LIMIT, Math.max(1, parsed));
+}
+
+async function currentBranch(root: string): Promise<string | null> {
+  try {
+    const name = (await git(root, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    // An unborn branch reports `HEAD`; there is no name to show yet.
+    return name && name !== "HEAD" ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Uncommitted entry count, or null when git cannot read the directory. */
+async function countPending(root: string): Promise<number | null> {
+  try {
+    const out = await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=normal"]);
+    // Parsed rather than counted: a rename occupies two NUL records but is one
+    // changed file.
+    return parsePorcelain(out).length;
+  } catch {
+    return null;
+  }
+}
+
+async function collectLog(
+  root: string,
+  limit: number,
+): Promise<{ commits: ExplorerCommit[]; branch: string | null; truncated: boolean }> {
+  const [out, branch] = await Promise.all([
+    // One extra record tells us whether to say "truncated" without a second
+    // `rev-list --count` pass.
+    git(root, ["log", "-n", String(limit + 1), COMMIT_FORMAT]).catch(() => ""),
+    currentBranch(root),
+  ]);
+  const commits = parseCommitLog(out);
+  const truncated = commits.length > limit;
+  return { commits: truncated ? commits.slice(0, limit) : commits, branch, truncated };
+}
+
+async function collectFileHistory(
+  root: string,
+  path: string,
+  limit: number,
+): Promise<{ revisions: ExplorerCommit[]; truncated: boolean }> {
+  // `--follow` tracks the file across renames, which is what a reader expects
+  // from a timeline; it only accepts a single pathspec, hence no other filters.
+  const out = await git(root, [
+    "log",
+    "--follow",
+    "-n",
+    String(limit + 1),
+    COMMIT_FORMAT,
+    "--",
+    path,
+  ]).catch(() => "");
+  const revisions = parseCommitLog(out);
+  const truncated = revisions.length > limit;
+  return { revisions: truncated ? revisions.slice(0, limit) : revisions, truncated };
+}
+
+/**
+ * Files one commit touched, with line counts, for the graph's expandable row.
+ *
+ * `--format=` with an empty value suppresses the commit header, so the output is
+ * purely the file list — the same `--name-status`/`--numstat` shapes the working
+ * tree diff already uses, and therefore the same parsers.
+ */
+async function collectCommitFiles(root: string, rev: string): Promise<ExplorerFileEntry[]> {
+  const [nameStatusOut, numstatOut] = await Promise.all([
+    git(root, ["show", "--name-status", "-z", "--format=", rev]).catch(() => ""),
+    git(root, ["show", "--numstat", "-z", "--format=", rev]).catch(() => ""),
+  ]);
+  return parseNameStatus(nameStatusOut, parseNumstat(numstatOut));
+}
+
+async function collectRepos(root: string): Promise<ExplorerRepoEntry[]> {
+  const repos: ExplorerRepoEntry[] = [
+    {
+      id: "root",
+      label: basename(root),
+      path: root,
+      isRoot: true,
+      branch: await currentBranch(root),
+      pending: await countPending(root),
+      initialized: true,
+    },
+  ];
+
+  let statusOut = "";
+  try {
+    statusOut = await git(root, ["submodule", "status", "--recursive"]);
+  } catch {
+    // No `.gitmodules`, or git older than the flag: a root-only list is right.
+    // It is also the right answer when git's own shell helper is unusable —
+    // observed on Windows when PATH has no Git\usr\bin, where `git submodule`
+    // dies with "basename: command not found". A missing submodule row must not
+    // take the repository list down with it.
+    return repos;
+  }
+
+  const seen = new Set<string>();
+  for (const module of parseSubmoduleStatus(statusOut)) {
+    if (seen.has(module.path)) continue;
+    seen.add(module.path);
+    // A submodule path comes from git, but it is still a path: containment is
+    // re-checked so a crafted `.gitmodules` cannot make us stat outside the
+    // task directory.
+    const inside = await resolveInside(root, module.path);
+    if (typeof inside !== "string") continue;
+    const initialized = module.state !== "uninitialized";
+    repos.push({
+      id: `sub:${module.path}`,
+      label: basename(module.path),
+      path: inside,
+      isRoot: false,
+      branch: initialized ? await currentBranch(inside) : null,
+      pending: initialized ? await countPending(inside) : null,
+      initialized,
+    });
+  }
+  return repos;
 }
 
 // --- file pairs -----------------------------------------------------------
@@ -550,6 +702,157 @@ export function setupExplorerIpc(): void {
           modifiedSize: modified.status === "absent" ? 0 : modified.size,
           problem,
         });
+      } catch (error) {
+        if (error instanceof Error && error.message === "git_not_found") return failure("no-git");
+        return failure("failed", error instanceof Error ? error.message : undefined);
+      }
+    },
+  );
+
+  ipcMain.handle(
+    EXPLORER_FILE_PAIR_AT_CHANNEL,
+    async (
+      event,
+      target: unknown,
+      path: unknown,
+      rev: unknown,
+    ): Promise<ExplorerResult<ExplorerFilePair>> => {
+      const roots = await rootsForWindow(event);
+      if (!roots) return failure("no-root");
+      const resolved = await rootForTarget(roots, target);
+      if ("ok" in resolved) return resolved;
+      if (typeof path !== "string" || path.length === 0) return failure("outside-root");
+      // A revision is interpolated into a `cat-file` spec (`<rev>:<path>`) and a
+      // `^` suffix, so anything but hex would be able to smuggle in another
+      // object spec — `HEAD~10` is fine, `HEAD:../../x` is not.
+      if (typeof rev !== "string" || !/^[0-9a-f]{4,64}$/i.test(rev)) {
+        return failure("failed", "Invalid revision");
+      }
+
+      const inside = await resolveInside(resolved.root, path);
+      if (typeof inside !== "string") return inside;
+
+      try {
+        // `<rev>^` is the first parent. A root commit has none, which reads as
+        // "added" — the same shape an added file has in the working-tree diff.
+        const [original, modified] = await Promise.all([
+          readBlobSide(resolved.root, `${rev}^`, path),
+          readBlobSide(resolved.root, rev, path),
+        ]);
+        const problem =
+          original.status === "problem"
+            ? original.problem
+            : modified.status === "problem"
+              ? modified.problem
+              : null;
+
+        return ok<ExplorerFilePair>({
+          original: original.status === "text" ? original.text : "",
+          modified: modified.status === "text" ? modified.text : "",
+          originalPath: path,
+          modifiedPath: path,
+          originalSize: original.status === "absent" ? 0 : original.size,
+          modifiedSize: modified.status === "absent" ? 0 : modified.size,
+          problem,
+        });
+      } catch (error) {
+        if (error instanceof Error && error.message === "git_not_found") return failure("no-git");
+        return failure("failed", error instanceof Error ? error.message : undefined);
+      }
+    },
+  );
+
+  ipcMain.handle(
+    EXPLORER_FILE_HISTORY_CHANNEL,
+    async (
+      event,
+      target: unknown,
+      path: unknown,
+      options: unknown,
+    ): Promise<ExplorerResult<{ revisions: ExplorerCommit[]; truncated: boolean }>> => {
+      const roots = await rootsForWindow(event);
+      if (!roots) return failure("no-root");
+      const resolved = await rootForTarget(roots, target);
+      if ("ok" in resolved) return resolved;
+      if (typeof path !== "string" || path.length === 0) return failure("outside-root");
+
+      const inside = await resolveInside(resolved.root, path);
+      if (typeof inside !== "string") return inside;
+
+      const requested =
+        options && typeof options === "object" ? (options as { limit?: unknown }).limit : undefined;
+
+      try {
+        return ok(
+          await collectFileHistory(resolved.root, path, clampLimit(requested, DEFAULT_HISTORY_LIMIT)),
+        );
+      } catch (error) {
+        if (error instanceof Error && error.message === "git_not_found") return failure("no-git");
+        return failure("failed", error instanceof Error ? error.message : undefined);
+      }
+    },
+  );
+
+  ipcMain.handle(
+    EXPLORER_GIT_LOG_CHANNEL,
+    async (
+      event,
+      target: unknown,
+      options: unknown,
+    ): Promise<
+      ExplorerResult<{ commits: ExplorerCommit[]; branch: string | null; truncated: boolean }>
+    > => {
+      const roots = await rootsForWindow(event);
+      if (!roots) return failure("no-root");
+      const resolved = await rootForTarget(roots, target);
+      if ("ok" in resolved) return resolved;
+
+      const requested =
+        options && typeof options === "object" ? (options as { limit?: unknown }).limit : undefined;
+
+      try {
+        return ok(await collectLog(resolved.root, clampLimit(requested, DEFAULT_LOG_LIMIT)));
+      } catch (error) {
+        if (error instanceof Error && error.message === "git_not_found") return failure("no-git");
+        return failure("failed", error instanceof Error ? error.message : undefined);
+      }
+    },
+  );
+
+  ipcMain.handle(
+    EXPLORER_COMMIT_FILES_CHANNEL,
+    async (
+      event,
+      target: unknown,
+      rev: unknown,
+    ): Promise<ExplorerResult<{ files: ExplorerFileEntry[] }>> => {
+      const roots = await rootsForWindow(event);
+      if (!roots) return failure("no-root");
+      const resolved = await rootForTarget(roots, target);
+      if ("ok" in resolved) return resolved;
+      if (typeof rev !== "string" || !/^[0-9a-f]{4,64}$/i.test(rev)) {
+        return failure("failed", "Invalid revision");
+      }
+
+      try {
+        return ok({ files: await collectCommitFiles(resolved.root, rev) });
+      } catch (error) {
+        if (error instanceof Error && error.message === "git_not_found") return failure("no-git");
+        return failure("failed", error instanceof Error ? error.message : undefined);
+      }
+    },
+  );
+
+  ipcMain.handle(
+    EXPLORER_REPOS_CHANNEL,
+    async (event, target: unknown): Promise<ExplorerResult<{ repos: ExplorerRepoEntry[] }>> => {
+      const roots = await rootsForWindow(event);
+      if (!roots) return failure("no-root");
+      const resolved = await rootForTarget(roots, target);
+      if ("ok" in resolved) return resolved;
+
+      try {
+        return ok({ repos: await collectRepos(resolved.root) });
       } catch (error) {
         if (error instanceof Error && error.message === "git_not_found") return failure("no-git");
         return failure("failed", error instanceof Error ? error.message : undefined);

@@ -14,6 +14,11 @@ export const EXPLORER_LIST_FILES_CHANNEL = "explorer:list-files";
 export const EXPLORER_READ_FILE_CHANNEL = "explorer:read-file";
 export const EXPLORER_GIT_STATUS_CHANNEL = "explorer:git-status";
 export const EXPLORER_FILE_PAIR_CHANNEL = "explorer:file-pair";
+export const EXPLORER_FILE_PAIR_AT_CHANNEL = "explorer:file-pair-at";
+export const EXPLORER_FILE_HISTORY_CHANNEL = "explorer:file-history";
+export const EXPLORER_GIT_LOG_CHANNEL = "explorer:git-log";
+export const EXPLORER_COMMIT_FILES_CHANNEL = "explorer:commit-files";
+export const EXPLORER_REPOS_CHANNEL = "explorer:repos";
 
 /** Which root a request is addressed to. */
 export type ExplorerTarget = "worktree" | "project";
@@ -111,4 +116,62 @@ export type ExplorerApi = {
     path: string,
     options?: { base?: string | null },
   ) => Promise<ExplorerResult<ExplorerFilePair>>;
+  /** The same file at one commit against its direct parent. */
+  filePairAt: (
+    target: ExplorerTarget,
+    path: string,
+    rev: string,
+  ) => Promise<ExplorerResult<ExplorerFilePair>>;
+  /** Commit history for one file, newest first (`git log --follow`). */
+  fileHistory: (
+    target: ExplorerTarget,
+    path: string,
+    options?: { limit?: number },
+  ) => Promise<ExplorerResult<{ revisions: ExplorerCommit[]; truncated: boolean }>>;
+  /** Recent commits of the repository, for the source-control graph. */
+  gitLog: (
+    target: ExplorerTarget,
+    options?: { limit?: number },
+  ) => Promise<ExplorerResult<{ commits: ExplorerCommit[]; branch: string | null; truncated: boolean }>>;
+  /** Files a single commit touched, with line counts. */
+  commitFiles: (
+    target: ExplorerTarget,
+    rev: string,
+  ) => Promise<ExplorerResult<{ files: ExplorerFileEntry[] }>>;
+  /** The root repository plus any submodules git reports. */
+  repos: (target: ExplorerTarget) => Promise<ExplorerResult<{ repos: ExplorerRepoEntry[] }>>;
+};
+
+/**
+ * One commit, reduced to what the timeline and the graph actually render.
+ *
+ * `refs` and `parents` exist so the renderer can badge `main` / `origin/main`
+ * and mark merges without a second round trip; the graph is drawn from the
+ * parent links rather than from `git log --graph`'s ASCII art, which cannot be
+ * styled.
+ */
+export type ExplorerCommit = {
+  hash: string;
+  shortHash: string;
+  subject: string;
+  author: string;
+  /** Author date, ISO 8601. */
+  date: string;
+  refs: string[];
+  parents: string[];
+};
+
+/** A repository the SCM view can talk about. */
+export type ExplorerRepoEntry = {
+  /** `root` for the window's own target, `sub:<path>` for a submodule. */
+  id: string;
+  label: string;
+  /** Absolute path, display only — never round-tripped back into a request. */
+  path: string;
+  isRoot: boolean;
+  branch: string | null;
+  /** Uncommitted entries; `null` when git could not be read. */
+  pending: number | null;
+  /** Submodules that have not been checked out yet report false. */
+  initialized: boolean;
 };

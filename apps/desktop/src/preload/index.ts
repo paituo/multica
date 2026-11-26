@@ -22,15 +22,23 @@ import {
 } from "../shared/issue-window";
 import type { ExplorerWindowRequest } from "../shared/explorer-window";
 import {
+  EXPLORER_COMMIT_FILES_CHANNEL,
+  EXPLORER_FILE_HISTORY_CHANNEL,
+  EXPLORER_FILE_PAIR_AT_CHANNEL,
   EXPLORER_FILE_PAIR_CHANNEL,
+  EXPLORER_GIT_LOG_CHANNEL,
   EXPLORER_GIT_STATUS_CHANNEL,
   EXPLORER_LIST_FILES_CHANNEL,
   EXPLORER_OPEN_CHANNEL,
   EXPLORER_READ_FILE_CHANNEL,
+  EXPLORER_REPOS_CHANNEL,
   EXPLORER_ROOT_INFO_CHANNEL,
   type ExplorerApi,
+  type ExplorerCommit,
   type ExplorerFileContent,
+  type ExplorerFileEntry,
   type ExplorerFilePair,
+  type ExplorerRepoEntry,
   type ExplorerResult,
   type ExplorerRootInfo,
   type ExplorerTarget,
@@ -420,6 +428,31 @@ const desktopAPI = {
       options?: { base?: string | null },
     ): Promise<ExplorerResult<ExplorerFilePair>> =>
       ipcRenderer.invoke(EXPLORER_FILE_PAIR_CHANNEL, target, path, options),
+    filePairAt: (
+      target: ExplorerTarget,
+      path: string,
+      rev: string,
+    ): Promise<ExplorerResult<ExplorerFilePair>> =>
+      ipcRenderer.invoke(EXPLORER_FILE_PAIR_AT_CHANNEL, target, path, rev),
+    fileHistory: (
+      target: ExplorerTarget,
+      path: string,
+      options?: { limit?: number },
+    ): Promise<ExplorerResult<{ revisions: ExplorerCommit[]; truncated: boolean }>> =>
+      ipcRenderer.invoke(EXPLORER_FILE_HISTORY_CHANNEL, target, path, options),
+    gitLog: (
+      target: ExplorerTarget,
+      options?: { limit?: number },
+    ): Promise<
+      ExplorerResult<{ commits: ExplorerCommit[]; branch: string | null; truncated: boolean }>
+    > => ipcRenderer.invoke(EXPLORER_GIT_LOG_CHANNEL, target, options),
+    commitFiles: (
+      target: ExplorerTarget,
+      rev: string,
+    ): Promise<ExplorerResult<{ files: ExplorerFileEntry[] }>> =>
+      ipcRenderer.invoke(EXPLORER_COMMIT_FILES_CHANNEL, target, rev),
+    repos: (target: ExplorerTarget): Promise<ExplorerResult<{ repos: ExplorerRepoEntry[] }>> =>
+      ipcRenderer.invoke(EXPLORER_REPOS_CHANNEL, target),
   } satisfies ExplorerApi,
   /** Tell main which workspace this main window shows (null while none). */
   reportWindowWorkspace: (workspaceSlug: string | null) =>
