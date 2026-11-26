@@ -60,6 +60,17 @@ export type ExplorerFileEntry = {
   /** Porcelain status letters, e.g. "M", "A", "D", "??", "R". */
   status: string | null;
   untracked?: boolean;
+  /**
+   * The two columns of `git status --porcelain`: X compares the index to HEAD,
+   * Y compares the worktree to the index. They are what lets the source-control
+   * view split "Staged Changes" from "Changes" the way VS Code does; a file
+   * with edits in both places appears in both groups.
+   *
+   * `null` when the entry does not come from a working-tree status (a branch
+   * diff, or a commit's file list), where the split is meaningless.
+   */
+  indexStatus?: string | null;
+  worktreeStatus?: string | null;
 };
 
 export type ExplorerChangeSet = {

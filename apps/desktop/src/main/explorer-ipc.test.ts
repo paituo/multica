@@ -225,6 +225,30 @@ describe("explorer:git-status", () => {
     expect(result.entries.some((entry) => entry.path === "src/added.ts")).toBe(false);
   });
 
+  it("keeps the index and worktree columns apart", async () => {
+    // Stage the modification the fixture already made, then edit again: `MM` is
+    // the case the Staged Changes / Changes split is built on.
+    git("add", "src/app.ts");
+    writeFileSync(join(repo, "src/app.ts"), "export const a = 4;\n");
+
+    const result = await call<{
+      ok: true;
+      entries: { path: string; status: string; indexStatus: string; worktreeStatus: string }[];
+    }>(EXPLORER_GIT_STATUS_CHANNEL, "worktree");
+
+    expect(result.entries.find((entry) => entry.path === "src/app.ts")).toMatchObject({
+      status: "M",
+      indexStatus: "M",
+      worktreeStatus: "M",
+    });
+    // Untracked files are `?` in both columns, which is why the renderer must
+    // not treat `?` as "staged".
+    expect(result.entries.find((entry) => entry.path === "untracked.md")).toMatchObject({
+      indexStatus: "?",
+      worktreeStatus: "?",
+    });
+  });
+
   it("reports the agent's net branch changes from the tagged baseline", async () => {
     const result = await call<{
       ok: true;

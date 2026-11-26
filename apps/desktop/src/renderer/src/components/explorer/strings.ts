@@ -62,6 +62,8 @@ const ZH = {
   filterNoMatch: "没有匹配项",
   clearFilter: "清除筛选",
   showUntracked: "显示未跟踪的文件",
+  stagedChanges: "已暂存的变更",
+  commitFilesEmpty: "该提交没有文件变更",
   repositories: "存储库",
   graph: "图表",
   graphEmpty: "没有提交记录",
@@ -133,6 +135,8 @@ const EN: Record<keyof typeof ZH, string> = {
   filterNoMatch: "No matching items",
   clearFilter: "Clear filter",
   showUntracked: "Show untracked files",
+  stagedChanges: "Staged Changes",
+  commitFilesEmpty: "No files changed in this commit",
   repositories: "Repositories",
   graph: "Graph",
   graphEmpty: "No commits",
@@ -152,6 +156,12 @@ const EN: Record<keyof typeof ZH, string> = {
 };
 
 export type ExplorerStrings = Record<keyof typeof ZH, string>;
+
+/**
+ * Both dictionaries, for callers that are not React components — the component
+ * tests render with `en` rather than booting the locale hook.
+ */
+export const EXPLORER_STRINGS: Record<"zh" | "en", ExplorerStrings> = { zh: ZH, en: EN };
 
 export function useExplorerStrings(): ExplorerStrings {
   const locale = useLocale();

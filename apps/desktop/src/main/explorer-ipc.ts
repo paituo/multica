@@ -252,12 +252,19 @@ async function collectWorktreeChanges(root: string): Promise<ExplorerChangeSet> 
   const totals = parseNumstat(numstatOut);
   const entries: ExplorerFileEntry[] = statuses.map((entry) => {
     const total = totals.get(entry.path);
+    // `XY`: X is the index against HEAD, Y the worktree against the index. The
+    // renderer groups by them (Staged Changes / Changes), so both are kept even
+    // though `status` stays a single letter for the badges.
+    const index = entry.status.charAt(0) || " ";
+    const worktree = entry.status.charAt(1) || " ";
     return {
       path: entry.path,
-      status: entry.status.trim() || entry.status,
+      status: index.trim() || worktree.trim() || null,
       additions: total?.additions ?? null,
       deletions: total?.deletions ?? null,
       untracked: entry.status === "??",
+      indexStatus: index,
+      worktreeStatus: worktree,
     };
   });
 
@@ -314,7 +321,10 @@ async function currentBranch(root: string): Promise<string | null> {
 /** Uncommitted entry count, or null when git cannot read the directory. */
 async function countPending(root: string): Promise<number | null> {
   try {
-    const out = await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=normal"]);
+    // `-uall`, not `-unormal`: the badge sits next to a list that expands
+    // untracked directories into their files, and a badge that says 1 while the
+    // list shows 40 is a bug the reader has to debug.
+    const out = await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
     // Parsed rather than counted: a rename occupies two NUL records but is one
     // changed file.
     return parsePorcelain(out).length;
