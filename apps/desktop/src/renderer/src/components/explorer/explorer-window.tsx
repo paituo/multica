@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from "react";
 import {
   FileText,
   GitBranch,
@@ -49,6 +57,18 @@ import { TRAFFIC_LIGHT_CLEARANCE } from "../window-toolbar";
  */
 
 type PanelMode = "files" | "changes";
+
+/**
+ * Id of the content region the tab strip controls. `aria-controls` needs a
+ * stable target, and there is exactly one panel per window, so a constant is
+ * enough; the tabs themselves are numbered by position.
+ */
+const TABPANEL_ID = "explorer-tabpanel";
+
+/** Tab element id, by position in the strip. */
+function tabElementId(index: number): string {
+  return `explorer-tab-${index}`;
+}
 
 export function ExplorerWindow({ context }: { context: ExplorerWindowContext }) {
   const user = useAuthStore((state) => state.user);
@@ -198,6 +218,7 @@ function ExplorerBody({
   );
 
   const activeTab = tabs.find((tab) => tab.id === activeId) ?? tabs[0];
+  const activeIndex = Math.max(0, tabs.findIndex((tab) => tab.id === activeTab?.id));
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -243,7 +264,12 @@ function ExplorerBody({
               )}
             </div>
           </aside>
-          <section className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <section
+            role="tabpanel"
+            id={TABPANEL_ID}
+            aria-labelledby={tabElementId(activeIndex)}
+            className="flex min-w-0 flex-1 flex-col overflow-hidden"
+          >
             {activeTab?.kind === "task" || !activeTab ? (
               <TaskPane context={context} />
             ) : activeTab.kind === "file" ? (
@@ -416,6 +442,42 @@ function ExplorerTabBar({
   onRefresh: () => void;
   strings: ExplorerStrings;
 }) {
+  const stripRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * Roving tabindex across the strip, as the tab pattern expects: only the
+   * selected tab is a tab stop, and the arrows walk the rest. Focus moves with
+   * selection — this strip has no second focus model to keep in sync — and the
+   * element is already in the DOM, so it can be focused without waiting for the
+   * re-render that follows `onActivate`.
+   */
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const current = tabs.findIndex((tab) => tab.id === activeId);
+    if (current < 0) return;
+    let next: number;
+    switch (event.key) {
+      case "ArrowRight":
+        next = (current + 1) % tabs.length;
+        break;
+      case "ArrowLeft":
+        next = (current - 1 + tabs.length) % tabs.length;
+        break;
+      case "Home":
+        next = 0;
+        break;
+      case "End":
+        next = tabs.length - 1;
+        break;
+      default:
+        return;
+    }
+    const target = tabs[next];
+    if (!target) return;
+    event.preventDefault();
+    onActivate(target.id);
+    stripRef.current?.querySelector<HTMLElement>(`[data-tab-index="${next}"]`)?.focus();
+  };
+
   return (
     <header
       className="flex shrink-0 items-start gap-1 pb-1 pr-2 pt-1.5"
@@ -425,6 +487,11 @@ function ExplorerTabBar({
       style={{ paddingLeft: TRAFFIC_LIGHT_CLEARANCE, WebkitAppRegion: "drag" } as CSSProperties}
     >
       <div
+        ref={stripRef}
+        role="tablist"
+        aria-label={strings.openTabs}
+        aria-orientation="horizontal"
+        onKeyDown={onKeyDown}
         className="flex min-w-0 flex-1 flex-wrap items-center gap-1"
         style={{ WebkitAppRegion: "no-drag" } as CSSProperties}
       >
@@ -435,39 +502,53 @@ function ExplorerTabBar({
           const hasRight = tabs.some((item, position) => position > index && item.id !== TASK_TAB_ID);
           const surface = (
             <div
+              role="tab"
+              id={tabElementId(index)}
+              aria-selected={active}
+              aria-controls={TABPANEL_ID}
+              // Read by the strip's arrow-key handler instead of a ref map: the
+              // context-menu trigger composes its own ref onto this element.
+              data-tab-index={index}
+              // Roving tabindex — the selected tab is the strip's single stop.
+              tabIndex={active ? 0 : -1}
+              title={tab.path ?? tab.title}
+              onClick={() => onActivate(tab.id)}
+              // A div does not take focus on click the way a button does, and
+              // the arrow keys above need the strip to already hold focus.
+              onMouseDown={(event) => event.currentTarget.focus()}
+              onAuxClick={(event) => {
+                if (event.button === 1 && closable) {
+                  event.preventDefault();
+                  onClose(tab.id);
+                }
+              }}
               className={[
-                "group flex h-7 max-w-[220px] shrink-0 items-center gap-1.5 rounded-md pl-2 pr-1 text-[12px]",
+                "group flex h-7 max-w-[220px] shrink-0 cursor-pointer items-center gap-1.5 rounded-md pl-2 pr-1 text-[12px]",
+                "outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 active
                   ? "bg-background text-foreground shadow-sm ring-1 ring-border"
                   : "text-muted-foreground hover:bg-accent/60",
               ].join(" ")}
             >
-              <button
-                type="button"
-                onClick={() => onActivate(tab.id)}
-                onAuxClick={(event) => {
-                  if (event.button === 1 && closable) {
-                    event.preventDefault();
-                    onClose(tab.id);
-                  }
-                }}
-                className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-                title={tab.path ?? tab.title}
-              >
-                {tab.kind === "diff" ? (
-                  <GitBranch className="size-3.5 shrink-0" aria-hidden="true" />
-                ) : tab.kind === "file" ? (
-                  <FileText className="size-3.5 shrink-0" aria-hidden="true" />
-                ) : (
-                  <FolderMark />
-                )}
-                <span className="truncate">{tab.title}</span>
-              </button>
+              {tab.kind === "diff" ? (
+                <GitBranch className="size-3.5 shrink-0" aria-hidden="true" />
+              ) : tab.kind === "file" ? (
+                <FileText className="size-3.5 shrink-0" aria-hidden="true" />
+              ) : (
+                <FolderMark />
+              )}
+              <span className="min-w-0 flex-1 truncate text-left">{tab.title}</span>
               {closable && (
                 <button
                   type="button"
-                  onClick={() => onClose(tab.id)}
-                  className="shrink-0 rounded-sm p-0.5 text-muted-foreground opacity-0 hover:bg-accent group-hover:opacity-100"
+                  // Inside a tab it would otherwise become a second tab stop;
+                  // VS Code keeps the close affordance out of the tab order too.
+                  tabIndex={-1}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onClose(tab.id);
+                  }}
+                  className="shrink-0 rounded-sm p-0.5 text-muted-foreground opacity-0 hover:bg-accent group-hover:opacity-100 focus-visible:opacity-100"
                   aria-label={strings.close}
                 >
                   <X className="size-3" aria-hidden="true" />
