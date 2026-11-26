@@ -1,0 +1,16 @@
+/*
+ * Paint for the preview's find highlights.
+ *
+ * Global on purpose: `::highlight()` takes a registry name, not a selector, so
+ * these rules cannot be scoped to a subtree. The names are namespaced
+ * (`explorer-find*`) so they cannot collide with another surface's registry.
+ */
+::highlight(explorer-find) {
+  background-color: rgb(250 204 21 / 0.35);
+  color: inherit;
+}
+
+::highlight(explorer-find-active) {
+  background-color: rgb(249 115 22 / 0.55);
+  color: inherit;
+}
