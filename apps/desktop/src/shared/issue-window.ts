@@ -2,6 +2,10 @@ import {
   parseWorkspaceSlug,
   readWorkspaceWindowSlug,
 } from "./workspace-window";
+import {
+  readExplorerWindowArgument,
+  type ExplorerWindowContext,
+} from "./explorer-window";
 
 export const ISSUE_WINDOW_ARGUMENT_PREFIX = "--multica-issue-window=";
 
@@ -26,7 +30,10 @@ export type IssueWindowContext = IssueWindowRequest & {
  */
 export type MainWindowContext = { kind: "main"; workspaceSlug?: string };
 
-export type DesktopWindowContext = MainWindowContext | IssueWindowContext;
+export type DesktopWindowContext =
+  | MainWindowContext
+  | IssueWindowContext
+  | ExplorerWindowContext;
 
 /**
  * Validate renderer-controlled input before it can become a BrowserWindow
@@ -109,6 +116,11 @@ export function encodeIssueWindowArgument(request: IssueWindowRequest): string {
 export function readDesktopWindowContext(
   argv: readonly string[],
 ): DesktopWindowContext {
+  // Checked first: the explorer window carries its own argument prefix and must
+  // never be mistaken for the main window that resumes a persisted workspace.
+  const explorer = readExplorerWindowArgument(argv);
+  if (explorer) return explorer;
+
   const workspaceSlug = readWorkspaceWindowSlug(argv);
   const main: MainWindowContext = workspaceSlug
     ? { kind: "main", workspaceSlug }
