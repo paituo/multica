@@ -20,6 +20,21 @@ import {
   readDesktopWindowContext,
   type IssueWindowRequest,
 } from "../shared/issue-window";
+import type { ExplorerWindowRequest } from "../shared/explorer-window";
+import {
+  EXPLORER_FILE_PAIR_CHANNEL,
+  EXPLORER_GIT_STATUS_CHANNEL,
+  EXPLORER_LIST_FILES_CHANNEL,
+  EXPLORER_OPEN_CHANNEL,
+  EXPLORER_READ_FILE_CHANNEL,
+  EXPLORER_ROOT_INFO_CHANNEL,
+  type ExplorerApi,
+  type ExplorerFileContent,
+  type ExplorerFilePair,
+  type ExplorerResult,
+  type ExplorerRootInfo,
+  type ExplorerTarget,
+} from "../shared/explorer-api";
 import { AUTH_SESSION_STATE_CHANNEL } from "../shared/auth-session";
 import {
   DEV_TOOLBAR_VISIBLE_CHANGED_CHANNEL,
@@ -377,6 +392,35 @@ const desktopAPI = {
   /** Open a validated issue-detail route in a dedicated native window. */
   openIssueWindow: (request: IssueWindowRequest) =>
     ipcRenderer.invoke("window:open-issue", request),
+  /** Open (or focus) the task explorer window for an issue. */
+  openExplorerWindow: (request: ExplorerWindowRequest) =>
+    ipcRenderer.invoke(EXPLORER_OPEN_CHANNEL, request),
+  /**
+   * Read-only filesystem/git access for the explorer window this renderer
+   * belongs to. Roots are resolved in the main process from the window's own
+   * launch payload, so no method here accepts an absolute path.
+   */
+  explorer: {
+    rootInfo: (): Promise<ExplorerResult<ExplorerRootInfo>> =>
+      ipcRenderer.invoke(EXPLORER_ROOT_INFO_CHANNEL),
+    listFiles: (
+      target: ExplorerTarget,
+    ): Promise<ExplorerResult<{ files: string[]; truncated: boolean }>> =>
+      ipcRenderer.invoke(EXPLORER_LIST_FILES_CHANNEL, target),
+    readFile: (
+      target: ExplorerTarget,
+      path: string,
+    ): Promise<ExplorerResult<{ content: ExplorerFileContent }>> =>
+      ipcRenderer.invoke(EXPLORER_READ_FILE_CHANNEL, target, path),
+    gitStatus: (target: ExplorerTarget) =>
+      ipcRenderer.invoke(EXPLORER_GIT_STATUS_CHANNEL, target),
+    filePair: (
+      target: ExplorerTarget,
+      path: string,
+      options?: { base?: string | null },
+    ): Promise<ExplorerResult<ExplorerFilePair>> =>
+      ipcRenderer.invoke(EXPLORER_FILE_PAIR_CHANNEL, target, path, options),
+  } satisfies ExplorerApi,
   /** Tell main which workspace this main window shows (null while none). */
   reportWindowWorkspace: (workspaceSlug: string | null) =>
     ipcRenderer.send(WINDOW_WORKSPACE_REPORT_CHANNEL, workspaceSlug),

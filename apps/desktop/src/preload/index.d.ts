@@ -8,6 +8,8 @@ import type {
   DesktopWindowContext,
   IssueWindowRequest,
 } from "../shared/issue-window";
+import type { ExplorerWindowRequest } from "../shared/explorer-window";
+import type { ExplorerApi } from "../shared/explorer-api";
 import type {
   ManualUpdateCheckResult,
   UpdaterDownloadState,
@@ -190,6 +192,12 @@ interface DesktopAPI {
   openIssueWindow: (
     request: IssueWindowRequest,
   ) => Promise<{ ok: true } | { ok: false; reason: "invalid_request" }>;
+  /** Open (or focus) the task explorer window for an issue. */
+  openExplorerWindow: (
+    request: ExplorerWindowRequest,
+  ) => Promise<{ ok: true } | { ok: false; reason: "invalid_request" }>;
+  /** Read-only filesystem and git access for this explorer window. */
+  explorer: ExplorerApi;
   /** Tell main which workspace this main window shows (null while none). */
   reportWindowWorkspace: (workspaceSlug: string | null) => void;
   /** Workspaces shown by the other main windows (synchronous). */
