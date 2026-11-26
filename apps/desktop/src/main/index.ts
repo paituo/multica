@@ -23,6 +23,11 @@ import {
 import { setupLocalDirectory } from "./local-directory";
 import { setupThemeFolder } from "./theme-folder";
 import { setupVoiceInput } from "./voice";
+import {
+  registerExplorerRoots,
+  setupExplorerIpc,
+  unregisterExplorerRoots,
+} from "./explorer-ipc";
 import { configureLinuxFileDialogs } from "./linux-file-dialog";
 import { openExternalSafely, downloadURLSafely } from "./external-url";
 import { installContextMenu } from "./context-menu";
@@ -67,6 +72,12 @@ import {
   parseIssueWindowRequest,
   type IssueWindowContext,
 } from "../shared/issue-window";
+import {
+  encodeExplorerWindowArgument,
+  parseExplorerWindowRequest,
+  type ExplorerWindowContext,
+} from "../shared/explorer-window";
+import { EXPLORER_OPEN_CHANNEL } from "../shared/explorer-api";
 import {
   encodeWorkspaceWindowArgument,
   FOCUS_WORKSPACE_WINDOW_CHANNEL,
@@ -171,6 +182,12 @@ function freezeBreadcrumbPath(): string {
 
 const mainWindows = new MainWindowRegistry<BrowserWindow>();
 const issueWindows = new Set<BrowserWindow>();
+/**
+ * Task explorer windows, keyed by issue id: one workbench per task. A second
+ * click focuses the existing window instead of stacking duplicates that would
+ * each persist their own explorer tab set.
+ */
+const explorerWindows = new Map<string, BrowserWindow>();
 const authSessionCoordinator = new AuthSessionCoordinator<BrowserWindow>(
   (window) => {
     issueWindows.delete(window);
@@ -707,6 +724,121 @@ function createIssueWindow(context: IssueWindowContext): void {
   loadRenderer(window);
 }
 
+/**
+ * The task explorer window: same assembly as `createIssueWindow`, different
+ * payload (a directory pair instead of a route alone) and a wider default.
+ *
+ * Kept as a sibling rather than a parameterised `createIssueWindow` on purpose.
+ * This is a downstream addition to a fast-moving upstream file; duplicating the
+ * ~85-line assembly means upstream edits to the issue-window path never collide
+ * with it, at the cost of having to mirror genuinely new setup steps by hand.
+ */
+function createExplorerWindow(context: ExplorerWindowContext): void {
+  const existing = explorerWindows.get(context.issueId);
+  if (existing && !existing.isDestroyed()) {
+    // The task may have finished since the window opened, so a re-click is also
+    // the moment to hand the window its current roots.
+    registerExplorerRoots(existing.webContents.id, {
+      worktree: context.worktree,
+      project: context.project,
+      branch: context.branch,
+    });
+    if (existing.isMinimized()) existing.restore();
+    existing.focus();
+    return;
+  }
+
+  const systemLocale = getSystemLocale();
+  lastKnownSystemLocale = systemLocale;
+
+  const window = new BrowserWindow({
+    width: 1280,
+    height: 860,
+    minWidth: 900,
+    minHeight: 600,
+    title: context.title,
+    titleBarStyle: "hiddenInset",
+    // The explorer's 40px top bar is this window's title bar, so the native
+    // controls sit centred on it exactly like the main window's.
+    trafficLightPosition: { x: 16, y: 17 },
+    show: false,
+    autoHideMenuBar: true,
+    ...(is.dev || process.platform === "linux"
+      ? { icon: BUNDLED_ICON_PATH }
+      : {}),
+    webPreferences: createRendererWebPreferences(
+      join(__dirname, "../preload/index.js"),
+      systemLocale,
+      [encodeExplorerWindowArgument(context)],
+    ),
+  });
+
+  const webContentsId = window.webContents.id;
+  explorerWindows.set(context.issueId, window);
+  // Registered with the auth coordinator as well: an account switch must close
+  // this window exactly like it closes a dedicated issue window.
+  authSessionCoordinator.registerIssueWindow(window);
+  registerExplorerRoots(webContentsId, {
+    worktree: context.worktree,
+    project: context.project,
+    branch: context.branch,
+  });
+
+  window.on("closed", () => {
+    explorerWindows.delete(context.issueId);
+    unregisterExplorerRoots(webContentsId);
+    authSessionCoordinator.unregisterIssueWindow(window);
+  });
+
+  window.on("ready-to-show", () => window.show());
+  installLocaleRefresh(window);
+  installDownloadSaveDialogHandler(window);
+
+  window.webContents.setWindowOpenHandler((details) => {
+    void openExternalSafely(details.url);
+    return { action: "deny" };
+  });
+  installWindowShortcutHandler(window);
+
+  const initialRouteContext = sanitizeRendererRouteContext({
+    surface: "tab",
+    path: context.path,
+    workspaceSlug: context.workspaceSlug,
+  });
+  if (initialRouteContext) {
+    rendererRouteContexts.set(window.webContents, initialRouteContext);
+  }
+  installRendererRecoveryHandlers(window as unknown as RendererRecoveryWindow, {
+    isDev: is.dev,
+    showReloadPrompt: createElectronReloadPrompt(
+      (options) => dialog.showMessageBox(window, options),
+      getEffectiveLocale,
+    ),
+    getDiagnosticContext: () => {
+      const routeContext = rendererRouteContexts.get(window.webContents);
+      return routeContext ? { desktopRoute: routeContext } : {};
+    },
+    persistBreadcrumb: is.dev
+      ? undefined
+      : (payload) =>
+          writeFreezeBreadcrumb(freezeBreadcrumbPath(), {
+            ownerId: `explorer:${window.id}`,
+            kind: payload.kind,
+            context: payload.context,
+            ts: Date.now(),
+            version: getAppVersion(),
+          }),
+    clearBreadcrumb: is.dev
+      ? undefined
+      : () =>
+          clearFreezeBreadcrumb(freezeBreadcrumbPath(), `explorer:${window.id}`),
+    log: devLog,
+  });
+
+  installContextMenu(window.webContents);
+  loadRenderer(window);
+}
+
 // --- Dev / production isolation -------------------------------------------
 // Give dev mode a separate app name and userData path so it gets its own
 // single-instance lock file and doesn't conflict with the packaged production
@@ -849,6 +981,18 @@ if (!gotTheLock) {
         return { ok: false, reason: "invalid_request" } as const;
       }
       createIssueWindow(context);
+      return { ok: true } as const;
+    });
+
+    ipcMain.handle(EXPLORER_OPEN_CHANNEL, (event, request: unknown) => {
+      if (!BrowserWindow.fromWebContents(event.sender)) {
+        return { ok: false, reason: "invalid_request" } as const;
+      }
+      const context = parseExplorerWindowRequest(request);
+      if (!context) {
+        return { ok: false, reason: "invalid_request" } as const;
+      }
+      createExplorerWindow(context);
       return { ok: true } as const;
     });
 
@@ -1115,6 +1259,7 @@ if (!gotTheLock) {
     setupLocalDirectory(() => mainWindows.mostRecent());
     setupThemeFolder();
     setupVoiceInput();
+    setupExplorerIpc();
 
     // Registered after the updater and daemon gates, so a quit they hold
     // (busy daemon, pending install) leaves the session writable; only the

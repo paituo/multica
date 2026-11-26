@@ -1086,7 +1086,8 @@
     "add_blocking": "阻塞其他任务...",
     "delete_issue": "删除任务",
     "mark_duplicate": "标记为重复...",
-    "open_in_new_window": "在新窗口中打开"
+    "open_in_new_window": "在新窗口中打开",
+    "open_in_explorer": "在探查窗口中打开"
   },
   "pickers": {
     "custom_property": {

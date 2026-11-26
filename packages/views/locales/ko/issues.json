@@ -1086,7 +1086,8 @@
     "add_blocking": "다른 작업 막기...",
     "delete_issue": "태스크 삭제",
     "mark_duplicate": "중복으로 표시...",
-    "open_in_new_window": "새 창에서 열기"
+    "open_in_new_window": "새 창에서 열기",
+    "open_in_explorer": "탐색기 창에서 열기"
   },
   "pickers": {
     "custom_property": {

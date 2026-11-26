@@ -29,6 +29,7 @@ import {
   ChevronLeft,
   ChevronRight,
   FileQuestion,
+  FolderOpen,
   Loader2,
   Lock,
   Milestone,
@@ -155,6 +156,8 @@ import { useIssueReadState } from "@multica/core/issues/read-state";
 import { useIssueRouteRef } from "@multica/core/issues/canonical-id";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspacePaths, issueRouteRef } from "@multica/core/paths";
+import { resolveWorkdirCopyTarget } from "@multica/core/issues";
+import { useNavigation } from "../../navigation";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
 import {
@@ -1425,6 +1428,7 @@ export function IssueDetail({ issueId, onDelete, inbox, defaultSidebarOpen = tru
   }, [id, linkedCommentId, linkedRequestToken]);
   const user = useAuthStore((s) => s.user);
   const paths = useWorkspacePaths();
+  const navigation = useNavigation();
   const openModal = useModalStore((state) => state.open);
 
   // Issue navigation — read from TQ list cache
@@ -3871,6 +3875,32 @@ export function IssueDetail({ issueId, onDelete, inbox, defaultSidebarOpen = tru
                 render={<AppLink href={paths.issueDetail(issueRouteRef(issue))} />}
               >
                 <ArrowUpRight />
+              </IconButton>
+            )}
+            {/* Desktop-only: the web/mobile adapters do not implement
+                openExplorerInNewWindow, and a button that silently does
+                nothing is worse than no button. */}
+            {!guest && navigation.openExplorerInNewWindow && (
+              <IconButton
+                label={t(($) => $.actions.open_in_explorer)}
+                tooltipSide="bottom"
+                className="text-muted-foreground"
+                onClick={() => {
+                  const target = resolveWorkdirCopyTarget(commentTasks ?? []);
+                  if (!target) return;
+                  navigation.openExplorerInNewWindow?.({
+                    path: paths.issueDetail(issueRouteRef(issue)),
+                    title: issue.identifier ?? issue.title,
+                    // Only one root exists per task state: while the task runs
+                    // the worktree is live; once it finishes the worktree is
+                    // removed and only the project directory remains.
+                    worktree: target.source === "task_workdir" ? target.path : null,
+                    project: target.source === "durable_project_directory" ? target.path : null,
+                    branch: target.branchName ?? null,
+                  });
+                }}
+              >
+                <FolderOpen />
               </IconButton>
             )}
             {!guest && <IssueDetailActionsDropdown

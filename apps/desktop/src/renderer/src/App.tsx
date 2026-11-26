@@ -17,6 +17,7 @@ import { DesktopShell } from "./components/desktop-layout";
 import { UpdateNotification } from "./components/update-notification";
 import { NativeContextMenu } from "./components/native-context-menu";
 import { IssueWindow } from "./components/issue-window";
+import { ExplorerWindow } from "./components/explorer/explorer-window";
 import { DesktopDevToolbar } from "./components/desktop-dev-toolbar";
 import {
   DESKTOP_EMERGENCY_COPY,
@@ -79,7 +80,9 @@ const HTML_LANG: Record<SupportedLocale, string> = {
 function useCmdWCloseTab() {
   useEffect(() => {
     return window.desktopAPI.onCloseActiveTab(() => {
-      if (window.desktopAPI.windowContext?.kind === "issue") {
+      const kind = window.desktopAPI.windowContext?.kind;
+      // Dedicated windows carry no main tab list: close the window outright.
+      if (kind === "issue" || kind === "explorer") {
         window.desktopAPI.closeWindow();
         return;
       }
@@ -513,7 +516,9 @@ export default function App() {
                 apiUrl={runtimeConfigResult.config.apiUrl}
               />
             )}
-            {windowContext.kind === "issue" ? (
+            {windowContext.kind === "explorer" ? (
+              <ExplorerWindow context={windowContext} />
+            ) : windowContext.kind === "issue" ? (
               <IssueWindowContent />
             ) : (
               <AppContent />

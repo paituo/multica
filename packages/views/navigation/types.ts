@@ -30,6 +30,18 @@ export interface NavigationAdapter {
   ) => void;
   /** Desktop only: open an issue path in its own window. */
   openIssueInNewWindow?: (path: string, title: string) => void;
+  /**
+   * Desktop only: open the task explorer window for an issue. Carries the
+   * directory roots because only the caller knows which task it means; the
+   * desktop main process validates them before they become launch arguments.
+   */
+  openExplorerInNewWindow?: (request: {
+    path: string;
+    title: string;
+    worktree: string | null;
+    project: string | null;
+    branch: string | null;
+  }) => void;
   /** Web only: hand an issue path to the installed desktop app. */
   openInDesktop?: (path: string) => void;
   /**

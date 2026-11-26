@@ -1144,7 +1144,8 @@
     "add_blocking": "Block another task...",
     "delete_issue": "Delete issue",
     "mark_duplicate": "Mark as duplicate...",
-    "open_in_new_window": "Open in new window"
+    "open_in_new_window": "Open in new window",
+    "open_in_explorer": "Open in explorer window"
   },
   "pickers": {
     "custom_property": {

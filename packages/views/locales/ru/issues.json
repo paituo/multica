@@ -1259,7 +1259,8 @@
     "mark_duplicate": "Отметить как дубликат...",
     "locate_in_sidebar": "Показать на боковой панели",
     "restore_to_inbox": "Вернуть во входящие",
-    "open_in_new_window": "Открыть в новом окне"
+    "open_in_new_window": "Открыть в новом окне",
+    "open_in_explorer": "Открыть в окне проводника"
   },
   "pickers": {
     "custom_property": {

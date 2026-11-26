@@ -274,6 +274,9 @@ export function DesktopNavigationProvider({
         if (!parseIssueWindowPath(path)) return;
         void window.desktopAPI.openIssueWindow({ path, title });
       },
+      openExplorerInNewWindow: (request) => {
+        void window.desktopAPI.openExplorerWindow(request);
+      },
       workspacesInOtherWindows: () => [...otherWindowWorkspaces()],
       getShareableUrl: (path: string) => `${appUrl}${path}`,
     }),

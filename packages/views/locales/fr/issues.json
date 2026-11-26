@@ -1144,7 +1144,8 @@
     "add_blocking": "Bloquer une autre tâche...",
     "delete_issue": "Supprimer la tâche",
     "mark_duplicate": "Marquer comme doublon...",
-    "open_in_new_window": "Ouvrir dans une nouvelle fenêtre"
+    "open_in_new_window": "Ouvrir dans une nouvelle fenêtre",
+    "open_in_explorer": "Ouvrir dans la fenêtre explorateur"
   },
   "pickers": {
     "custom_property": {

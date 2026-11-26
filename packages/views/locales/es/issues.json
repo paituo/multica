@@ -1058,7 +1058,8 @@
     "copy_identifier": "Copiar ID de tarea",
     "identifier_copied": "{{identifier}} copiado",
     "stop_agent_run": "Detener la ejecución de {{name}}",
-    "open_in_new_window": "Abrir en una ventana nueva"
+    "open_in_new_window": "Abrir en una ventana nueva",
+    "open_in_explorer": "Abrir en la ventana del explorador"
   },
   "pickers": {
     "custom_property": {
