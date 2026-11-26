@@ -176,6 +176,11 @@ export function CommitGraph({
                         {strings.loadFailed}
                       </p>
                     )}
+                    {files.status === "ready" && files.files.length === 0 && (
+                      <p className="px-2 py-1 text-[11px] text-muted-foreground">
+                        {strings.commitFilesEmpty}
+                      </p>
+                    )}
                     {files.status === "ready" &&
                       files.files.map((file) => (
                         <button

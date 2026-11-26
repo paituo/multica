@@ -372,15 +372,26 @@ async function collectFileHistory(
 /**
  * Files one commit touched, with line counts, for the graph's expandable row.
  *
- * `--format=` with an empty value suppresses the commit header, so the output is
- * purely the file list — the same `--name-status`/`--numstat` shapes the working
- * tree diff already uses, and therefore the same parsers.
+ * Diffed against the **first parent** rather than through `git show`: a merge
+ * commit has no diff of its own, so `git show` prints an empty file list and the
+ * expanded row reads as "this merge changed nothing" — wrong for every PR merge
+ * in the repository. For an ordinary commit the two are the same output.
+ *
+ * A root commit has no parent, so the diff fails and the `git show --format=`
+ * fallback runs; both print the `--name-status`/`--numstat` shapes the existing
+ * parsers already handle.
  */
 async function collectCommitFiles(root: string, rev: string): Promise<ExplorerFileEntry[]> {
-  const [nameStatusOut, numstatOut] = await Promise.all([
-    git(root, ["show", "--name-status", "-z", "--format=", rev]).catch(() => ""),
-    git(root, ["show", "--numstat", "-z", "--format=", rev]).catch(() => ""),
+  let [nameStatusOut, numstatOut] = await Promise.all([
+    git(root, ["diff", "--name-status", "-z", `${rev}^1`, rev]).catch(() => ""),
+    git(root, ["diff", "--numstat", "-z", `${rev}^1`, rev]).catch(() => ""),
   ]);
+  if (!nameStatusOut) {
+    [nameStatusOut, numstatOut] = await Promise.all([
+      git(root, ["show", "--name-status", "-z", "--format=", rev]).catch(() => ""),
+      git(root, ["show", "--numstat", "-z", "--format=", rev]).catch(() => ""),
+    ]);
+  }
   return parseNameStatus(nameStatusOut, parseNumstat(numstatOut));
 }
 

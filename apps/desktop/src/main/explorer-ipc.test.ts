@@ -481,6 +481,32 @@ describe("explorer:commit-files", () => {
       message: "Invalid revision",
     });
   });
+
+  it("lists what a merge commit brought in, rather than nothing", async () => {
+    // `git show <merge>` prints no diff at all, so the naive implementation
+    // reports an empty file list for every PR merge. Diffing against the first
+    // parent is what the graph's expanded row needs.
+    git("checkout", "-q", "-f", "-b", "merge-scratch", BASE_BRANCH);
+    git("checkout", "-q", "-b", "merge-side");
+    writeFileSync(join(repo, "side.txt"), "side\n");
+    git("add", "side.txt");
+    git("commit", "-qm", "side work");
+    git("checkout", "-q", "merge-scratch");
+    writeFileSync(join(repo, "main-side.txt"), "main\n");
+    git("add", "main-side.txt");
+    git("commit", "-qm", "main work");
+    git("merge", "-q", "--no-ff", "-m", "merge side", "merge-side");
+    const mergeSha = git("rev-parse", "HEAD");
+
+    const result = await call<CommitFiles>(EXPLORER_COMMIT_FILES_CHANNEL, "worktree", mergeSha);
+    // Everything the merge added *on top of its first parent* — which is the
+    // side branch's file, not the commit made on the mainline before merging.
+    expect(result.files.map((file) => file.path)).toEqual(["side.txt"]);
+
+    // Scratch branches only: BASE_BRANCH must stay where the other cases expect.
+    git("checkout", "-q", "-f", BASE_BRANCH);
+    git("branch", "-q", "-D", "merge-scratch", "merge-side");
+  });
 });
 
 describe("explorer:file-pair-at", () => {
