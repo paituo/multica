@@ -14,6 +14,7 @@ import { BASE_EDITOR_OPTIONS, currentThemeName, languageFor, monaco } from "./mo
 import type { ExplorerStrings } from "./strings";
 import { useCtrlWheelZoom } from "./use-ctrl-wheel-zoom";
 import { useElementSize } from "./use-element-size";
+import { useMonacoTheme } from "./use-monaco-theme";
 
 /**
  * Diff surface, rendered by Monaco's diff editor.
@@ -166,13 +167,7 @@ export function DiffView({
 
   // The window follows the app theme through `html.dark`; Monaco is told to
   // follow rather than being re-created.
-  useEffect(() => {
-    const apply = () => monaco.editor.setTheme(currentThemeName());
-    apply();
-    const observer = new MutationObserver(apply);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    return () => observer.disconnect();
-  }, []);
+  useMonacoTheme();
 
   // --- change navigation ---------------------------------------------------
 

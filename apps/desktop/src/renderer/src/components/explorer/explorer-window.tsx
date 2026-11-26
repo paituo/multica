@@ -329,6 +329,7 @@ function ExplorerFileList({
 }) {
   const [files, setFiles] = useState<string[] | null>(null);
   const [failed, setFailed] = useState(false);
+  const [truncated, setTruncated] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -341,6 +342,7 @@ function ExplorerFileList({
         return;
       }
       setFiles(result.files);
+      setTruncated(result.truncated);
     });
     return () => {
       cancelled = true;
@@ -349,7 +351,17 @@ function ExplorerFileList({
 
   if (failed) return <p className="px-3 py-4 text-body text-muted-foreground">{strings.loadFailed}</p>;
   if (files === null) return <p className="px-3 py-4 text-body text-muted-foreground">{strings.loading}</p>;
-  return <FileTree files={files} selectedPath={null} onOpen={onOpen} strings={strings} />;
+  // The IPC caps the listing; saying so beats a tree that silently stops.
+  return (
+    <>
+      <FileTree files={files} selectedPath={null} onOpen={onOpen} strings={strings} />
+      {truncated && (
+        <p className="shrink-0 border-t border-border px-3 py-1.5 text-[11px] text-muted-foreground">
+          {strings.truncated}
+        </p>
+      )}
+    </>
+  );
 }
 
 function DiffPane({

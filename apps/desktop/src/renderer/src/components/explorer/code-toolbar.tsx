@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ChevronsUpDown, Columns2, Minus, Plus, Rows3, Space, WrapText } from "@multica/ui/icons";
+import { ChevronsUpDown, Code, Columns2, Eye, Minus, Plus, Rows3, Space, WrapText } from "@multica/ui/icons";
 import { fontSizePercent, useExplorerViewPrefs, type DiffLayout } from "@/stores/explorer-view-prefs";
 import type { ExplorerStrings } from "./strings";
 
@@ -15,12 +15,19 @@ export function CodeToolbar({
   strings,
   leading,
   layoutToggle,
+  previewToggle,
 }: {
   strings: ExplorerStrings;
   /** Left-hand cluster, e.g. diff hunk navigation. */
   leading?: ReactNode;
   /** Renders the side-by-side / inline switch. Diff view only. */
   layoutToggle?: { layout: DiffLayout; splitViable: boolean };
+  /**
+   * Renders the source / preview switch. File view only, and only for files
+   * that have a rendered form (markdown) — VS Code shows the preview button in
+   * the editor title bar for exactly those.
+   */
+  previewToggle?: { previewing: boolean; onChange: (previewing: boolean) => void };
 }) {
   const fontSize = useExplorerViewPrefs((state) => state.codeFontSize);
   const zoomCode = useExplorerViewPrefs((state) => state.zoomCode);
@@ -37,6 +44,25 @@ export function CodeToolbar({
     <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border/60 px-2 text-[11px] text-muted-foreground">
       {leading}
       <div className="ml-auto flex items-center gap-0.5">
+        {previewToggle && (
+          <div className="flex items-center rounded-md bg-muted/50 p-0.5">
+            <ToolbarButton
+              label={strings.viewSource}
+              onClick={() => previewToggle.onChange(false)}
+              pressed={!previewToggle.previewing}
+            >
+              <Code className="size-3" aria-hidden="true" />
+            </ToolbarButton>
+            <ToolbarButton
+              label={strings.viewPreview}
+              title={strings.previewShortcut}
+              onClick={() => previewToggle.onChange(true)}
+              pressed={previewToggle.previewing}
+            >
+              <Eye className="size-3" aria-hidden="true" />
+            </ToolbarButton>
+          </div>
+        )}
         {layoutToggle && (
           <div className="flex items-center rounded-md bg-muted/50 p-0.5">
             <ToolbarButton
@@ -99,12 +125,15 @@ export function CodeToolbar({
 
 function ToolbarButton({
   label,
+  title,
   onClick,
   pressed,
   disabled,
   children,
 }: {
   label: string;
+  /** Tooltip when it should say more than the accessible name (e.g. a shortcut). */
+  title?: string;
   onClick: () => void;
   pressed?: boolean;
   disabled?: boolean;
@@ -114,7 +143,7 @@ function ToolbarButton({
     <button
       type="button"
       onClick={onClick}
-      title={label}
+      title={title ?? label}
       aria-label={label}
       aria-pressed={pressed}
       disabled={disabled}

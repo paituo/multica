@@ -44,6 +44,12 @@ type Stored = {
    * than reading a whole file; `minimumLineCount` keeps small files untouched.
    */
   collapseUnchanged: boolean;
+  /**
+   * Show markdown files rendered instead of as source. Off by default, as in
+   * VS Code, where opening a `.md` gives you the text and the preview is a
+   * deliberate act (`Ctrl+Shift+V`).
+   */
+  markdownPreview: boolean;
 };
 
 const STORAGE_KEY = "multica_explorer_view_prefs";
@@ -55,6 +61,7 @@ const DEFAULTS: Stored = {
   diffLayout: "split",
   ignoreTrimWhitespace: true,
   collapseUnchanged: true,
+  markdownPreview: false,
 };
 
 export function clampFontSize(value: number): number {
@@ -82,6 +89,8 @@ export function readViewPrefs(): Stored {
         typeof parsed.collapseUnchanged === "boolean"
           ? parsed.collapseUnchanged
           : DEFAULTS.collapseUnchanged,
+      markdownPreview:
+        typeof parsed.markdownPreview === "boolean" ? parsed.markdownPreview : DEFAULTS.markdownPreview,
     };
   } catch {
     return { ...DEFAULTS };
@@ -110,6 +119,8 @@ type ExplorerViewPrefsState = Stored & {
   toggleIgnoreTrimWhitespace: () => void;
   setCollapseUnchanged: (value: boolean) => void;
   toggleCollapseUnchanged: () => void;
+  setMarkdownPreview: (value: boolean) => void;
+  toggleMarkdownPreview: () => void;
 };
 
 const initial = readViewPrefs();
@@ -153,6 +164,12 @@ export const useExplorerViewPrefs = create<ExplorerViewPrefsState>((set, get) =>
     writeViewPrefs({ ...get(), collapseUnchanged });
   },
   toggleCollapseUnchanged: () => get().setCollapseUnchanged(!get().collapseUnchanged),
+  setMarkdownPreview: (markdownPreview) => {
+    if (markdownPreview === get().markdownPreview) return;
+    set({ markdownPreview });
+    writeViewPrefs({ ...get(), markdownPreview });
+  },
+  toggleMarkdownPreview: () => get().setMarkdownPreview(!get().markdownPreview),
 }));
 
 /** Percentage shown in the toolbar; 12 px is the reference size. */

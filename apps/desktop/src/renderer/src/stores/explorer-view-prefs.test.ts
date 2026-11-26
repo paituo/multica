@@ -18,6 +18,7 @@ beforeEach(() => {
     diffLayout: "split",
     ignoreTrimWhitespace: true,
     collapseUnchanged: true,
+    markdownPreview: false,
   });
 });
 
@@ -70,7 +71,21 @@ describe("useExplorerViewPrefs", () => {
       diffLayout: "split",
       ignoreTrimWhitespace: true,
       collapseUnchanged: true,
+      markdownPreview: false,
     });
+  });
+
+  it("remembers the markdown preview switch and ignores a non-boolean one", () => {
+    useExplorerViewPrefs.getState().toggleMarkdownPreview();
+    expect(useExplorerViewPrefs.getState().markdownPreview).toBe(true);
+    expect(readViewPrefs().markdownPreview).toBe(true);
+
+    window.localStorage.setItem(
+      "multica_explorer_view_prefs",
+      JSON.stringify({ markdownPreview: "yes" }),
+    );
+    // Anything that is not a boolean falls back to `false`, i.e. source first.
+    expect(readViewPrefs().markdownPreview).toBe(false);
   });
 
   it("remembers the diff-specific toggles", () => {
