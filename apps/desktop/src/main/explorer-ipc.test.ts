@@ -3,11 +3,17 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Drives the real IPC handlers against a throwaway git repository, so the git
 // invocations, the containment checks and the porcelain parsing are exercised
 // together rather than asserted piecemeal.
+
+// Every case spawns real `git` subprocesses — dozens per run on a cold cache —
+// so the 5 s default is nowhere near enough once the whole suite competes for
+// the machine. A timeout here is not a slow assertion, it is a killed test that
+// leaves the shared repository mid-flight for the next case.
+vi.setConfig({ testTimeout: 30_000 });
 
 const handlers = new Map<string, (event: unknown, ...args: unknown[]) => Promise<unknown>>();
 
@@ -57,6 +63,10 @@ beforeAll(() => {
   git("config", "user.email", "test@multica.invalid");
   git("config", "user.name", "Explorer Test");
   git("config", "commit.gpgsign", "false");
+  // The host's system gitconfig sets `core.autocrlf=true` on some machines; left
+  // alone, a forced checkout would rewrite the working tree with CRLF and the
+  // document assertions would compare line endings instead of content.
+  git("config", "core.autocrlf", "false");
 
   writeFileSync(join(repo, "a.txt"), "one\ntwo\n");
   mkdirSync(join(repo, "src"));
@@ -79,11 +89,20 @@ beforeAll(() => {
   git("commit", "-qm", "agent: change app and add file");
 
   // A dirty working tree on top, for worktree-mode assertions.
-  writeFileSync(join(repo, "src", "app.ts"), "export const a = 3;\n");
-  writeFileSync(join(repo, "untracked.md"), "# untracked\n");
+  makeDirty();
 
   registerExplorerRoots(WEB_CONTENTS_ID, { worktree: repo, project: repo, branch: BASE_BRANCH });
   setupExplorerIpc();
+});
+
+// Restore the shared repository *before* each case rather than at the tail of the
+// mutating ones: a case that throws or times out never reaches its own cleanup,
+// and every later case would then assert against whatever branch and working tree
+// the dead one left behind.
+beforeEach(() => {
+  git("checkout", "-q", "-f", BASE_BRANCH);
+  registerExplorerRoots(WEB_CONTENTS_ID, { worktree: repo, project: repo, branch: BASE_BRANCH });
+  makeDirty();
 });
 
 afterAll(() => {
@@ -231,9 +250,6 @@ describe("explorer:git-status", () => {
     expect(result.base).not.toBe(baselineSha);
     expect(result.entries.map((entry) => entry.path)).toEqual(["next.txt"]);
 
-    git("checkout", "-q", "-f", BASE_BRANCH);
-    registerExplorerRoots(WEB_CONTENTS_ID, { worktree: repo, project: repo, branch: BASE_BRANCH });
-    makeDirty();
   });
 
   it("falls back to merge-base when the branch has no baseline commit of its own", async () => {
@@ -253,9 +269,6 @@ describe("explorer:git-status", () => {
     expect(result.baseStrategy).toBe("merge-base");
     expect(result.entries.map((entry) => entry.path)).toEqual(["plain.txt"]);
 
-    git("checkout", "-q", "-f", BASE_BRANCH);
-    registerExplorerRoots(WEB_CONTENTS_ID, { worktree: repo, project: repo, branch: BASE_BRANCH });
-    makeDirty();
   });
 });
 
