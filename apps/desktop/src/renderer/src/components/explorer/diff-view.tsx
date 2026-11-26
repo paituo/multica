@@ -59,10 +59,17 @@ const INLINE_ONLY: monaco.editor.IDiffEditorOptions = {
 export function DiffView({
   pair,
   path,
+  visible = true,
   strings,
 }: {
   pair: ExplorerFilePair;
   path?: string;
+  /**
+   * False while this tab sits in the background (`display: none`). Monaco
+   * measures zero for a hidden container, so the diff is re-laid out the moment
+   * the tab comes back rather than being left with a 0 × 0 viewport.
+   */
+  visible?: boolean;
   strings: ExplorerStrings;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -168,6 +175,13 @@ export function DiffView({
   // The window follows the app theme through `html.dark`; Monaco is told to
   // follow rather than being re-created.
   useMonacoTheme();
+
+  // `automaticLayout` is a ResizeObserver, and a `display: none` element
+  // reports a zero-size box: the diff would come back from a background tab
+  // laid out at 0 px wide. Re-measuring on activation is one call.
+  useEffect(() => {
+    if (visible) editorRef.current?.layout();
+  }, [visible]);
 
   // --- change navigation ---------------------------------------------------
 

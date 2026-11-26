@@ -51,6 +51,7 @@ import { FilterInput } from "./filter-input";
 import { RepoList } from "./repo-list";
 import type { FileStatusDecoration } from "./status-badge";
 import { useExplorerStrings, type ExplorerStrings } from "./strings";
+import { FileTimeline } from "./timeline";
 import { IssueWindow } from "../issue-window";
 import { TRAFFIC_LIGHT_CLEARANCE } from "../window-toolbar";
 
@@ -83,10 +84,25 @@ export function ExplorerWindow({ context }: { context: ExplorerWindowContext }) 
   const strings = useExplorerStrings();
 
   if (isLoading) {
+    // The window is already on screen (the main process shows it immediately),
+    // so this is the first thing the user sees. Drawing the shell — rail,
+    // sidebar, pane — makes it read as "opening" rather than as a blank window
+    // that failed to load; auth bootstrap is one request away from this being
+    // replaced by the real thing.
     return (
       <ExplorerFrame strings={strings}>
-        <div className="flex h-full items-center justify-center">
-          <MulticaIcon mode="think" size={40} />
+        <div className="flex h-full min-h-0 flex-col">
+          <div className="h-9 shrink-0" />
+          <div className="flex min-h-0 flex-1">
+            <div className="w-14 shrink-0" />
+            <div className="mr-2 mb-2 flex min-h-0 flex-1 overflow-hidden rounded-page bg-page-canvas shadow-[var(--page-shadow,var(--surface-shadow))] ring-1 ring-page-border">
+              <div className="w-[280px] shrink-0 border-r border-border" />
+              <div className="flex flex-1 items-center justify-center gap-3 text-body text-muted-foreground">
+                <MulticaIcon mode="think" size={24} />
+                <span>{strings.loading}</span>
+              </div>
+            </div>
+          </div>
         </div>
       </ExplorerFrame>
     );
@@ -148,10 +164,25 @@ function ExplorerBody({
   strings: ExplorerStrings;
 }) {
   const [panel, setPanel] = useState<PanelMode>("files");
+  /**
+   * Panels that have been shown at least once.
+   *
+   * They are only *hidden* after that, never unmounted: each panel fetches on
+   * mount (`listFiles` + `gitStatus`, or `repos` + `status` + log), so toggling
+   * the rail icon used to re-run four git commands and re-render the tree from
+   * scratch — visible as a "loading" flash on every switch. Mounting lazily
+   * keeps the first paint as cheap as it was.
+   */
+  const [mountedPanels, setMountedPanels] = useState<PanelMode[]>(["files"]);
   const [rootInfo, setRootInfo] = useState<ExplorerRootInfo | null>(null);
   const [rootError, setRootError] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
   const initialized = useRef(false);
+
+  const selectPanel = useCallback((next: PanelMode) => {
+    setPanel(next);
+    setMountedPanels((previous) => (previous.includes(next) ? previous : [...previous, next]));
+  }, []);
 
   const tabs = useExplorerTabs((state) => state.tabs);
   const activeId = useExplorerTabs((state) => state.activeId);
@@ -197,15 +228,15 @@ function ExplorerBody({
       const key = event.key.toLowerCase();
       if (key === "e") {
         event.preventDefault();
-        setPanel("files");
+        selectPanel("files");
       } else if (key === "g") {
         event.preventDefault();
-        setPanel("changes");
+        selectPanel("changes");
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [selectPanel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -217,12 +248,12 @@ function ExplorerBody({
       }
       setRootError(null);
       setRootInfo(result);
-      if (!result.worktree && result.project) setPanel("changes");
+      if (!result.worktree && result.project) selectPanel("changes");
     });
     return () => {
       cancelled = true;
     };
-  }, [refreshToken, strings]);
+  }, [refreshToken, strings, selectPanel]);
 
   const target: ExplorerTarget = rootInfo?.defaultTarget ?? "worktree";
 
@@ -277,6 +308,9 @@ function ExplorerBody({
       ? (activeTab.path ?? "").split("\u0000")[0]
       : null;
 
+  /** The file tab whose history the sidebar timeline shows, if any. */
+  const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <ExplorerTabBar
@@ -290,7 +324,7 @@ function ExplorerBody({
         strings={strings}
       />
       <div className="flex min-h-0 flex-1">
-        <ExplorerRail panel={panel} onChange={setPanel} strings={strings} />
+        <ExplorerRail panel={panel} onChange={selectPanel} strings={strings} />
         <div className="mr-2 mb-2 flex min-h-0 flex-1 overflow-hidden rounded-page bg-page-canvas shadow-[var(--page-shadow,var(--surface-shadow))] ring-1 ring-page-border">
           <aside className="flex w-[280px] shrink-0 flex-col border-r border-border">
             {rootInfo?.worktreeGone && (
@@ -309,32 +343,70 @@ function ExplorerBody({
             <div className="flex min-h-0 flex-1 flex-col">
               {rootError ? (
                 <p className="px-3 py-4 text-body text-muted-foreground">{rootError}</p>
-              ) : panel === "files" ? (
-                <ExplorerFileList
-                  target={target}
-                  refreshToken={refreshToken}
-                  selectedPath={activeTab?.kind === "file" ? (activeTab.path ?? null) : null}
-                  onOpen={openFile}
-                  strings={strings}
-                />
               ) : (
                 <>
-                  {/* Same vertical order as VS Code's Source Control view:
-                      repositories, then the change set, then the graph. */}
-                  <RepoList target={target} refreshToken={refreshToken} strings={strings} />
-                  <ChangeList
-                    target={target}
-                    refreshToken={refreshToken}
-                    selectedPath={activeChangePath}
-                    onOpenDiff={openDiff}
-                    strings={strings}
-                  />
-                  <CommitGraph
-                    target={target}
-                    refreshToken={refreshToken}
-                    onOpenCommitFile={openCommitDiff}
-                    strings={strings}
-                  />
+                  {/*
+                   * Both panels stay mounted once visited and are toggled with
+                   * `hidden`. `hidden` removes them from layout, so the visible
+                   * panel still fills the sidebar, while the hidden one keeps
+                   * its data, its expand state and its scroll offset.
+                   */}
+                  <div
+                    className={panel === "files" ? "flex min-h-0 flex-1 flex-col" : "hidden"}
+                    data-explorer-panel="files"
+                  >
+                    {mountedPanels.includes("files") && (
+                      <>
+                        <ExplorerFileList
+                          target={target}
+                          refreshToken={refreshToken}
+                          selectedPath={activeTab?.kind === "file" ? (activeTab.path ?? null) : null}
+                          onOpen={openFile}
+                          strings={strings}
+                        />
+                        {/*
+                         * VS Code's Timeline belongs to the explorer sidebar,
+                         * under the tree — not under the editor. It follows the
+                         * active file tab; a diff tab leaves it empty rather
+                         * than showing history for whatever file was open last.
+                         */}
+                        {activeFileTab && (
+                          <FileTimeline
+                            target={target}
+                            path={activeFileTab.path ?? ""}
+                            refreshToken={refreshToken}
+                            onOpenCommit={(rev) => openCommitDiff(rev, activeFileTab.path ?? "")}
+                            strings={strings}
+                          />
+                        )}
+                      </>
+                    )}
+                  </div>
+                  <div
+                    className={panel === "changes" ? "flex min-h-0 flex-1 flex-col" : "hidden"}
+                    data-explorer-panel="changes"
+                  >
+                    {mountedPanels.includes("changes") && (
+                      <>
+                        {/* Same vertical order as VS Code's Source Control view:
+                            repositories, then the change set, then the graph. */}
+                        <RepoList target={target} refreshToken={refreshToken} strings={strings} />
+                        <ChangeList
+                          target={target}
+                          refreshToken={refreshToken}
+                          selectedPath={activeChangePath}
+                          onOpenDiff={openDiff}
+                          strings={strings}
+                        />
+                        <CommitGraph
+                          target={target}
+                          refreshToken={refreshToken}
+                          onOpenCommitFile={openCommitDiff}
+                          strings={strings}
+                        />
+                      </>
+                    )}
+                  </div>
                 </>
               )}
             </div>
@@ -345,36 +417,101 @@ function ExplorerBody({
             aria-labelledby={tabElementId(activeIndex)}
             className="flex min-w-0 flex-1 flex-col overflow-hidden"
           >
-            {activeTab?.kind === "task" || !activeTab ? (
-              <TaskPane context={context} />
-            ) : activeTab.kind === "file" ? (
-              <FileViewer
+            {/*
+             * Every open tab stays mounted; only the active one is displayed.
+             * Opening a file used to unmount the previous one, so coming back
+             * re-read the blob over IPC and rebuilt the Monaco model — the
+             * "switching reloads everything" complaint. It also means the
+             * editor keeps its scroll position, its find query and its undo
+             * stack, which is what an editor tab is expected to do.
+             */}
+            {tabs.map((tab) => (
+              <ExplorerTabPane
+                key={tab.id}
+                tab={tab}
+                visible={tab.id === activeTab?.id}
+                context={context}
                 target={target}
-                path={activeTab.path ?? ""}
-                refreshToken={refreshToken}
-                onOpenCommit={(rev) => openCommitDiff(rev, activeTab.path ?? "")}
-                strings={strings}
-              />
-            ) : activeTab.kind === "commit" ? (
-              <CommitDiffPane
-                target={target}
-                path={activeTab.path ?? ""}
-                refreshToken={refreshToken}
-                strings={strings}
-              />
-            ) : (
-              <DiffPane
-                target={target}
-                path={activeTab.path ?? ""}
                 refreshToken={refreshToken}
                 strings={strings}
               />
-            )}
+            ))}
           </section>
         </div>
       </div>
     </div>
   );
+}
+
+/**
+ * One tab's content, kept alive across activation changes.
+ *
+ * The refresh token is frozen while the tab is hidden: the window bumps it on
+ * every focus regain (an agent may have rewritten files), and refreshing ten
+ * hidden tabs on each alt-tab would be ten IPC round-trips nobody asked for.
+ * On becoming visible again the tab picks up the latest token, which is exactly
+ * one refresh — and each pane performs that refresh silently, keeping its
+ * current document on screen instead of flashing a spinner.
+ */
+function ExplorerTabPane({
+  tab,
+  visible,
+  context,
+  target,
+  refreshToken,
+  strings,
+}: {
+  tab: ExplorerTab;
+  visible: boolean;
+  context: ExplorerWindowContext;
+  target: ExplorerTarget;
+  refreshToken: number;
+  strings: ExplorerStrings;
+}) {
+  const token = useVisibleRefreshToken(visible, refreshToken);
+
+  return (
+    <div
+      className={visible ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "hidden"}
+      data-explorer-tab-pane={tab.id}
+    >
+      {tab.kind === "task" ? (
+        <TaskPane context={context} />
+      ) : tab.kind === "file" ? (
+        <FileViewer
+          target={target}
+          path={tab.path ?? ""}
+          refreshToken={token}
+          visible={visible}
+          strings={strings}
+        />
+      ) : tab.kind === "commit" ? (
+        <CommitDiffPane
+          target={target}
+          path={tab.path ?? ""}
+          refreshToken={token}
+          visible={visible}
+          strings={strings}
+        />
+      ) : (
+        <DiffPane
+          target={target}
+          path={tab.path ?? ""}
+          refreshToken={token}
+          visible={visible}
+          strings={strings}
+        />
+      )}
+    </div>
+  );
+}
+
+function useVisibleRefreshToken(visible: boolean, token: number): number {
+  const [frozen, setFrozen] = useState(token);
+  useEffect(() => {
+    if (visible) setFrozen(token);
+  }, [visible, token]);
+  return frozen;
 }
 
 /**
@@ -539,11 +676,14 @@ function DiffPane({
   target,
   path,
   refreshToken,
+  visible,
   strings,
 }: {
   target: ExplorerTarget;
   path: string;
   refreshToken: number;
+  /** False while the tab is in the background; used only for re-layout. */
+  visible: boolean;
   strings: ExplorerStrings;
 }) {
   // `path` may carry the base commit after a NUL, so a branch diff stays pinned
@@ -558,7 +698,10 @@ function DiffPane({
 
   useEffect(() => {
     let cancelled = false;
-    setState({ status: "loading" });
+    // Silent refresh: a token bump (window focus, manual refresh) must not
+    // replace a rendered diff with a spinner. Only a tab with nothing on screen
+    // shows the loading state.
+    setState((previous) => (previous.status === "ready" ? previous : { status: "loading" }));
     // Two documents, not a patch: the diff editor needs the full text of both
     // sides to collapse unchanged regions and to search inside the diff.
     void window.desktopAPI.explorer.filePair(target, filePath, { base }).then((result) => {
@@ -588,13 +731,7 @@ function DiffPane({
       </div>
     );
   }
-  return (
-    <DiffView
-      pair={state.pair}
-      path={filePath}
-      strings={strings}
-    />
-  );
+  return <DiffView pair={state.pair} path={filePath} visible={visible} strings={strings} />;
 }
 
 /**
@@ -608,11 +745,13 @@ function CommitDiffPane({
   target,
   path,
   refreshToken,
+  visible,
   strings,
 }: {
   target: ExplorerTarget;
   path: string;
   refreshToken: number;
+  visible: boolean;
   strings: ExplorerStrings;
 }) {
   const separator = path.indexOf("\u0000");
@@ -629,7 +768,7 @@ function CommitDiffPane({
       return;
     }
     let cancelled = false;
-    setState({ status: "loading" });
+    setState((previous) => (previous.status === "ready" ? previous : { status: "loading" }));
     void window.desktopAPI.explorer.filePairAt(target, filePath, rev).then((result) => {
       if (cancelled) return;
       setState(result.ok ? { status: "ready", pair: result } : { status: "error" });
@@ -653,7 +792,7 @@ function CommitDiffPane({
       </div>
     );
   }
-  return <DiffView pair={state.pair} path={filePath} strings={strings} />;
+  return <DiffView pair={state.pair} path={filePath} visible={visible} strings={strings} />;
 }
 
 /** Last path segment, for tab titles. */

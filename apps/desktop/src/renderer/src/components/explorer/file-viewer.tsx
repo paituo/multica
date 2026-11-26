@@ -8,7 +8,7 @@ import {
   ContextMenuTrigger,
 } from "@multica/ui/components/ui/context-menu";
 import { Markdown } from "@multica/ui/markdown";
-import type { ExplorerCommit, ExplorerTarget } from "../../../../shared/explorer-api";
+import type { ExplorerTarget } from "../../../../shared/explorer-api";
 import { DEFAULT_CODE_FONT_SIZE, useExplorerViewPrefs } from "@/stores/explorer-view-prefs";
 import { CodeToolbar } from "./code-toolbar";
 import { BASE_EDITOR_OPTIONS, currentThemeName, languageFor, monaco } from "./monaco-setup";
@@ -16,7 +16,6 @@ import { PreviewFindBar } from "./preview-find-bar";
 import { useHighlightMatches, usePreviewMatches } from "./preview-find";
 import "./preview-find.css";
 import type { ExplorerStrings } from "./strings";
-import { FileTimeline } from "./timeline";
 import { useCtrlWheelZoom } from "./use-ctrl-wheel-zoom";
 import { useMonacoTheme } from "./use-monaco-theme";
 
@@ -56,14 +55,17 @@ export function FileViewer({
   target,
   path,
   refreshToken,
-  onOpenCommit,
+  visible,
   strings,
 }: {
   target: ExplorerTarget;
   path: string;
   refreshToken: number;
-  /** Opens a revision of this file in a diff tab; wired to the timeline rows. */
-  onOpenCommit: (rev: ExplorerCommit) => void;
+  /**
+   * False while this tab is in the background (`display: none`). Monaco cannot
+   * measure a hidden container, so the editor is laid out again on return.
+   */
+  visible: boolean;
   strings: ExplorerStrings;
 }) {
   const [state, setState] = useState<ViewerState>({ status: "loading" });
@@ -138,7 +140,10 @@ export function FileViewer({
 
   useEffect(() => {
     let cancelled = false;
-    setState({ status: "loading" });
+    // Silent refresh: a token bump (window focus, the refresh button) must not
+    // blank a document that is already on screen. The editor keeps its model
+    // until the new text arrives, and its scroll position survives the swap.
+    setState((previous) => (previous.status === "text" ? previous : { status: "loading" }));
 
     void window.desktopAPI.explorer.readFile(target, path).then((result) => {
       if (cancelled) return;
@@ -231,6 +236,12 @@ export function FileViewer({
   useEffect(() => {
     if (!previewing) editorRef.current?.layout();
   }, [previewing]);
+
+  // Same reason, one level up: the whole tab is `display: none` while another
+  // tab is active, so the editor comes back at 0 × 0 without this.
+  useEffect(() => {
+    if (visible) editorRef.current?.layout();
+  }, [visible]);
 
   // VS Code's "open preview to the side"; here it flips the same pane.
   useEffect(() => {
@@ -383,20 +394,6 @@ export function FileViewer({
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
-
-      {/*
-       * VS Code's Timeline, docked under the editor rather than in a sidebar.
-       * Only rendered once the file has loaded — a timeline of a path that
-       * failed to read would be a list of commits for something the reader
-       * cannot see.
-       */}
-      <FileTimeline
-        target={target}
-        path={path}
-        refreshToken={refreshToken}
-        onOpenCommit={onOpenCommit}
-        strings={strings}
-      />
     </div>
   );
 }
